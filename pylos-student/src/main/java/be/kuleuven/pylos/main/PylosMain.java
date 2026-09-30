@@ -28,17 +28,17 @@ public class PylosMain {
     public static void main(String[] args) {
         /* !!! jvm argument !!! -ea */
 
-        startSPRT();
+        //startSPRT();
 //        startEloRoundRobinTournament();
 
         //startSingleGame();
-        //startBattle();
+        startBattle();
         //startBattleMultithreaded();
         //startRoundRobinTournament();
     }
 
     public static void startSPRT() {
-        PylosPlayerType newPlayer = new PylosPlayerType("Minimax4") {
+        PylosPlayerType newPlayer = new PylosPlayerType("Student - Random") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerMiniMax(4);
@@ -88,7 +88,7 @@ public class PylosMain {
             }
         };
 
-        PylosPlayerType p2 = new PylosPlayerType("Minimax2") {
+        PylosPlayerType p2 = new PylosPlayerType("Student - Random") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerMiniMax(2);

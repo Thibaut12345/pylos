@@ -2,6 +2,7 @@ package be.kuleuven.pylos.player.student;
 
 import be.kuleuven.pylos.game.PylosBoard;
 import be.kuleuven.pylos.game.PylosGameIF;
+import be.kuleuven.pylos.game.PylosSphere;
 import be.kuleuven.pylos.player.PylosPlayer;
 
 /**
@@ -19,12 +20,41 @@ public class StudentPlayer extends PylosPlayer {
 
         /* game methods
          * game.moveSphere(myReserveSphere, allLocations[0]); */
+        PylosSphere myReserveSphere = board.getReserve(this);
+
+        /*
+        * MinMAX versie
+        *
+        *
+        *
+        * */
+
+        /*
+        * Monte carlo versie
+        *
+        *
+        *
+        * */
     }
 
     @Override
     public void doRemove(PylosGameIF game, PylosBoard board) {
         /* game methods
          * game.removeSphere(mySphere); */
+
+        /*
+         * MinMAX versie
+         *
+         *
+         *
+         * */
+
+        /*
+         * Monte carlo versie
+         *
+         *
+         *
+         * */
     }
 
     @Override
@@ -32,5 +62,19 @@ public class StudentPlayer extends PylosPlayer {
         /* game methods
          * game.removeSphere(mySphere);
          * game.pass() */
+
+        /*
+         * MinMAX versie
+         *
+         *
+         *
+         * */
+
+        /*
+         * Monte carlo versie
+         *
+         *
+         *
+         * */
     }
 }
