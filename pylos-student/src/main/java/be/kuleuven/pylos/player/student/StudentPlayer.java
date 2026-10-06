@@ -116,11 +116,79 @@ public class StudentPlayer extends PylosPlayer {
     }
 
     @Override
-    public void doRemove(PylosGameIF game, PylosBoard board) {}
+    public void doRemove(PylosGameIF game, PylosBoard board) {
+        /*
+         * Monte carlo versie
+         *
+         *   predictive model
+         *   probability distribution
+         *   Simulations
+         *
+         * */
+        init(game.getState(), board);
+
+        final PylosPlayerColor currentColor = simulator.getColor();
+        PylosSphere[] spheres = board.getSpheres(currentColor);
+
+        for (PylosSphere sphere : spheres) {
+            if (!sphere.canRemove()) {
+                continue;
+            }
+            PylosLocation previousLocation = sphere.getLocation();
+            //System.out.println(sphere.canRemove()+"1");
+            getObserver().checkingRemoveSphere(sphere);
+            //System.out.println(sphere.canRemove()+"2");
+            simulator.removeSphere(sphere);
+
+            double score = simulateGames();
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestSphere = sphere;
+                }
+            simulator.undoRemoveFirstSphere(sphere, previousLocation, PylosGameState.REMOVE_FIRST, PLAYER_COLOR);
+        }
+        getObserver().shout("Monte Carlo: " + (int) (bestScore * 100) + "% chance");
+        game.removeSphere(bestSphere);
+    }
 
 
     @Override
-    public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {}
+    public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
+        /*
+         * Monte carlo versie
+         *
+         *   predictive model
+         *   probability distribution
+         *   Simulations
+         *
+         * */
+        init(game.getState(), board);
+
+        final PylosPlayerColor currentColor = simulator.getColor();
+        PylosSphere[] spheres = board.getSpheres(currentColor);
+
+        for (PylosSphere sphere : spheres) {
+            if (!sphere.canRemove()) {
+                continue;
+            }
+            PylosLocation previousLocation = sphere.getLocation();
+            //System.out.println(sphere.canRemove()+"1");
+            getObserver().checkingRemoveSphere(sphere);
+            //System.out.println(sphere.canRemove()+"2");
+            simulator.removeSphere(sphere);
+
+            double score = simulateGames();
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestSphere = sphere;
+            }
+            simulator.undoRemoveSecondSphere(sphere, previousLocation, PylosGameState.REMOVE_SECOND, PLAYER_COLOR);
+        }
+        getObserver().shout("Monte Carlo: " + (int) (bestScore * 100) + "% chance");
+        game.removeSphere(bestSphere);
+    }
 
 
     private void init(PylosGameState state, PylosBoard board) {
@@ -231,7 +299,7 @@ public class StudentPlayer extends PylosPlayer {
         PylosLocation previousLocation = sphere.getLocation();
 
         simulator.removeSphere(sphere);
-        System.out.println("random Remove 236");
+        //System.out.println("random Remove 236");
 
         double result = randomGame();
 
