@@ -9,14 +9,15 @@ import java.util.ArrayList;
  * Created by Jan on 20/02/2015.
  */
 public class StudentPlayer extends PylosPlayer {
-    private static final int NUMBER_OF_SIMULATIONS = 4;
+    private static final int NUMBER_OF_SIMULATIONS = 500;
+    //private static final int NUMBER_OF_SIMULATIONS = 10000;
 
     /*
      * Score used for a random simulation.
      */
     private static final double WIN_SCORE = 1.0;
-    private static final double DRAW_SCORE = 0.5;
-    private static final double LOSS_SCORE = 0.0;
+    private static final double DRAW_SCORE = 0;
+    private static final double LOSS_SCORE = -1.0;
 
     private PylosGameSimulator simulator;
     private PylosBoard board;
@@ -30,33 +31,16 @@ public class StudentPlayer extends PylosPlayer {
 
     @Override
     public void doMove(PylosGameIF game, PylosBoard board) {
-        /* board methods
-         * 	PylosLocation[] allLocations = board.getLocations();
-         * 	PylosSphere[] allSpheres = board.getSpheres();
-         * 	PylosSphere[] mySpheres = board.getSpheres(this);
-         * 	PylosSphere myReserveSphere = board.getReserve(this); */
-
-        /* game methods
-         * game.moveSphere(myReserveSphere, allLocations[0]); */
-
-        /*
-        * MinMAX versie
-        *
-        *
-        *
-        * */
-
-        /*
-        * Monte carlo versie
-        *
-        *   predictive model
-        *   probability distribution
-        *   Simulations
-        *
-        * */
         init(game.getState(), board);
 
 
+        PylosSquare[] allsquares = board.getAllSquares();
+        if(board.getAllSquares().length >= allsquares.length+1){
+//        Iets doen voor squares bv: if PylosSquares.size + 1 dan extra punten
+//        SImulatie natuurlijk voor check
+
+            System.out.println("Test");
+        }
         final PylosPlayerColor currentColor = simulator.getColor();
         PylosSphere[] spheres = board.getSpheres(currentColor);
         PylosLocation[] locations = board.getLocations();
@@ -111,7 +95,6 @@ public class StudentPlayer extends PylosPlayer {
 
             simulator.undoAddSphere(reserveSphere, PylosGameState.MOVE, currentColor);
         }
-        getObserver().shout("Monte Carlo: " + (int) (bestScore * 100) + "% chance");
         game.moveSphere(bestSphere, bestLocation);
     }
 
@@ -148,7 +131,6 @@ public class StudentPlayer extends PylosPlayer {
                 }
             simulator.undoRemoveFirstSphere(sphere, previousLocation, PylosGameState.REMOVE_FIRST, PLAYER_COLOR);
         }
-        getObserver().shout("Monte Carlo: " + (int) (bestScore * 100) + "% chance");
         game.removeSphere(bestSphere);
     }
 
@@ -186,7 +168,6 @@ public class StudentPlayer extends PylosPlayer {
             }
             simulator.undoRemoveSecondSphere(sphere, previousLocation, PylosGameState.REMOVE_SECOND, PLAYER_COLOR);
         }
-        getObserver().shout("Monte Carlo: " + (int) (bestScore * 100) + "% chance");
         game.removeSphere(bestSphere);
     }
 
