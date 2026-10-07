@@ -45,7 +45,7 @@ public class PylosMain {
             }
         };
 
-        PylosPlayerType basePlayer = new PylosPlayerType("Bestfit") {
+        PylosPlayerType basePlayer = new PylosPlayerType("CODeS - Level 2") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerBestFit();
@@ -80,15 +80,15 @@ public class PylosMain {
     }
 
     public static void startBattle() {
-        int nRuns = 100;
-        PylosPlayerType p1 = new PylosPlayerType("BestFit") {
+        int nRuns = 500;
+        PylosPlayerType p1 = new PylosPlayerType("Minimax4") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerBestFit();
             }
         };
 
-        PylosPlayerType p2 = new PylosPlayerType("Student - Random") {
+        PylosPlayerType p2 = new PylosPlayerType("Student") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerMiniMax(2);
