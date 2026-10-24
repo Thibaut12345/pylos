@@ -12,9 +12,7 @@ public class StudentPlayer extends PylosPlayer {
     private static final int NUMBER_OF_SIMULATIONS = 500;
     //private static final int NUMBER_OF_SIMULATIONS = 10000;
 
-    /*
-     * Score used for a random simulation.
-     */
+
     private static final double WIN_SCORE = 1.0;
     private static final double DRAW_SCORE = 0;
     private static final double LOSS_SCORE = -1.0;
@@ -34,17 +32,10 @@ public class StudentPlayer extends PylosPlayer {
         init(game.getState(), board);
 
 
-        PylosSquare[] allsquares = board.getAllSquares();
-        if(board.getAllSquares().length >= allsquares.length+1){
-//        Iets doen voor squares bv: if PylosSquares.size + 1 dan extra punten
-//        SImulatie natuurlijk voor check
-
-            System.out.println("Test");
-        }
         final PylosPlayerColor currentColor = simulator.getColor();
         PylosSphere[] spheres = board.getSpheres(currentColor);
         PylosLocation[] locations = board.getLocations();
-//
+
         for (PylosSphere sphere : spheres) {
 
             if (sphere.isReserve()) {
@@ -86,7 +77,6 @@ public class StudentPlayer extends PylosPlayer {
 
             double score = simulateGames();
 
-//            double score = 10;
             if (score > bestScore) {
                 bestScore = score;
                 bestSphere = reserveSphere;
@@ -100,14 +90,7 @@ public class StudentPlayer extends PylosPlayer {
 
     @Override
     public void doRemove(PylosGameIF game, PylosBoard board) {
-        /*
-         * Monte carlo versie
-         *
-         *   predictive model
-         *   probability distribution
-         *   Simulations
-         *
-         * */
+
         init(game.getState(), board);
 
         final PylosPlayerColor currentColor = simulator.getColor();
@@ -137,14 +120,7 @@ public class StudentPlayer extends PylosPlayer {
 
     @Override
     public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
-        /*
-         * Monte carlo versie
-         *
-         *   predictive model
-         *   probability distribution
-         *   Simulations
-         *
-         * */
+
         init(game.getState(), board);
 
         final PylosPlayerColor currentColor = simulator.getColor();

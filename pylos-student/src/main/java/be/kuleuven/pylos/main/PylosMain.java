@@ -14,6 +14,7 @@ import be.kuleuven.pylos.player.PylosPlayerType;
 import be.kuleuven.pylos.player.codes.PlayerFactoryCodes;
 import be.kuleuven.pylos.player.codes.PylosPlayerBestFit;
 import be.kuleuven.pylos.player.codes.PylosPlayerMiniMax;
+import be.kuleuven.pylos.player.student.StudentPlayer;
 import be.kuleuven.pylos.sprt.SPRT;
 import be.kuleuven.pylos.tournament.Tournament;
 import be.kuleuven.pylos.tournament.TournamentConfig;
@@ -45,10 +46,10 @@ public class PylosMain {
             }
         };
 
-        PylosPlayerType basePlayer = new PylosPlayerType("CODeS - Level 2") {
+        PylosPlayerType basePlayer = new PylosPlayerType("Student") {
             @Override
             public PylosPlayer create() {
-                return new PylosPlayerBestFit();
+                return new StudentPlayer();
             }
         };
 
