@@ -2,85 +2,57 @@ package be.kuleuven.pylos.player.student;
 
 import be.kuleuven.pylos.game.*;
 import be.kuleuven.pylos.player.PylosPlayer;
+import be.kuleuven.pylos.player.PylosPlayerObserver;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 
-/** Student Pylos player using adversarial UCT Monte Carlo Tree Search. */
+/** MCTS player with adversarial UCT selection and tactically biased rollouts. */
 public class StudentPlayer extends PylosPlayer {
     private static final int NUMBER_OF_SIMULATIONS = 1000;
-    private static final double WIN_SCORE = 1.0;
-    private static final double DRAW_SCORE = 0.0;
-    private static final double LOSS_SCORE = -1.0;
-
+    private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
     private static final int MAX_ROLLOUT_ACTIONS = 512;
+    // PylosGame.init shares getRandom() between both players; keep search randomness private.
+    private final Random searchRandom = new Random();
 
     private PylosGameSimulator simulator;
     private PylosBoard board;
     private MCTSTree tree;
     private MCTSTree.Action chosenAction;
 
-    public StudentPlayer() { }
-
-    @Override
-    public void doMove(PylosGameIF game, PylosBoard board) {
+    @Override public void doMove(PylosGameIF game, PylosBoard board) {
         init(game.getState(), board);
-        //System.out.println("initDoMove:");
-        //System.out.println("AI color: " + PLAYER_COLOR);
-        //System.out.println("Simulator color: " + simulator.getColor());
-        //System.out.println("Simulator state: " + simulator.getState());
-        //System.out.println("Simulator state key: " + stateKey());
         chosenAction = searchBestAction();
         if (chosenAction == null || (chosenAction.type != MCTSTree.ActionType.PLACEMENT
                 && chosenAction.type != MCTSTree.ActionType.MOVE)) {
             throw new IllegalStateException("MCTS did not return a legal move action");
         }
-
         getObserver().checkingMoveSphere(chosenAction.sphere, chosenAction.location);
         game.moveSphere(chosenAction.sphere, chosenAction.location);
-        advanceTreeAfterRealAction();
+        tree.advanceRoot(chosenAction);
     }
 
-    @Override
-    public void doRemove(PylosGameIF game, PylosBoard board) {
+    @Override public void doRemove(PylosGameIF game, PylosBoard board) {
         init(game.getState(), board);
-        //System.out.println("initDoReMove:");
-        //System.out.println("AI color: " + PLAYER_COLOR);
-        //System.out.println("Simulator color: " + simulator.getColor());
-        //System.out.println("Simulator state: " + simulator.getState());
-        //System.out.println("Simulator state key: " + stateKey());
         chosenAction = searchBestAction();
-        if (chosenAction == null || chosenAction.type != MCTSTree.ActionType.REMOVE_FIRST) {
+        if (chosenAction == null || chosenAction.type != MCTSTree.ActionType.REMOVE_FIRST)
             throw new IllegalStateException("MCTS did not return a legal first-removal action");
-        }
-
         getObserver().checkingRemoveSphere(chosenAction.sphere);
         game.removeSphere(chosenAction.sphere);
-        advanceTreeAfterRealAction();
+        tree.advanceRoot(chosenAction);
     }
 
-    @Override
-    public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
+    @Override public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
         init(game.getState(), board);
-        //System.out.println("initDoReMoveOrPass:");
-        //System.out.println("AI color: " + PLAYER_COLOR);
-        //System.out.println("Simulator color: " + simulator.getColor());
-        //System.out.println("Simulator state: " + simulator.getState());
-        //System.out.println("Simulator state key: " + stateKey());
         chosenAction = searchBestAction();
-        if (chosenAction == null) {
-            throw new IllegalStateException("MCTS did not return a legal second-removal action");
-        }
-
-        if (chosenAction.type == MCTSTree.ActionType.PASS) {
-            game.pass();
-        } else if (chosenAction.type == MCTSTree.ActionType.REMOVE_SECOND) {
+        if (chosenAction == null) throw new IllegalStateException("MCTS returned no second-removal action");
+        if (chosenAction.type == MCTSTree.ActionType.PASS) game.pass();
+        else if (chosenAction.type == MCTSTree.ActionType.REMOVE_SECOND) {
             getObserver().checkingRemoveSphere(chosenAction.sphere);
             game.removeSphere(chosenAction.sphere);
-        } else {
-            throw new IllegalStateException("Unexpected action during second removal: " + chosenAction);
-        }
-        advanceTreeAfterRealAction();
+        } else throw new IllegalStateException("Unexpected second-removal action: " + chosenAction);
+        tree.advanceRoot(chosenAction);
     }
 
     private void init(PylosGameState state, PylosBoard board) {
@@ -88,268 +60,181 @@ public class StudentPlayer extends PylosPlayer {
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
         String stateKey = stateKey();
 
-        if (tree == null) {
+        if (tree == null || tree.getRewardPerspective() != PLAYER_COLOR) {
+            // Create a fresh tree if this is a new game or the player's
+            // colour no longer matches the tree's reward perspective.
             tree = new MCTSTree(PLAYER_COLOR, stateKey, getRandom());
         } else {
             tree.ensureRoot(simulator.getColor(), stateKey);
         }
     }
+    @Override
+    public void init(
+            PylosPlayerColor playerColor,
+            PylosPlayer other,
+            PylosPlayerObserver observer,
+            Random random
+    ) {
+        super.init(playerColor, other, observer, random);
+
+        // Every new game starts with a fresh MCTS tree.
+        tree = null;
+    }
 
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
-        for (int i = 0; i < NUMBER_OF_SIMULATIONS; i++) {
-            runOneIteration(root);
-        }
+        for (int i = 0; i < NUMBER_OF_SIMULATIONS; i++) runOneIteration(root);
         return tree.bestRootAction();
     }
 
     private void runOneIteration(MCTSTree.Node root) {
         List<MCTSTree.Node> path = new ArrayList<>();
-        List<UndoRecord> undoRecords = new ArrayList<>();
+        List<UndoRecord> undo = new ArrayList<>();
         MCTSTree.Node node = root;
         path.add(node);
-
-        PylosGameState startingState = simulator.getState();
-        PylosPlayerColor startingColor = simulator.getColor();
-
-        // Capture the board and game state before the iteration.
-        String stateKeyBefore = stateKey();
-
-        double reward = 0.0;
-
+        PylosGameState startState = simulator.getState();
+        PylosPlayerColor startColor = simulator.getColor();
+        String before = stateKey();
+        double reward;
         try {
             int depth = 0;
-
             while (!isTerminal()) {
-                List<MCTSTree.Action> legalActions = legalActions();
-
-                if (legalActions.isEmpty()) {
-                    throw new IllegalStateException(
-                            "No legal actions in state " + simulator.getState()
-                    );
-                }
-
-                MCTSTree.Node child = tree.selectOrExpand(node, legalActions);
-
-                undoRecords.add(apply(child.getAction()));
-
+                List<MCTSTree.Action> legal = legalActions();
+                if (legal.isEmpty()) throw new IllegalStateException("No legal actions in " + simulator.getState());
+                MCTSTree.Node child = tree.selectOrExpand(node, legal);
+                undo.add(apply(child.getAction()));
                 child.setObservedState(stateKey(), simulator.getColor());
-
                 node = child;
                 path.add(node);
-                depth++;
-
-                if (node.getVisits() == 0 || depth >= MAX_ROLLOUT_ACTIONS) {
-                    break;
-                }
+                if (node.getVisits() == 0 || ++depth >= MAX_ROLLOUT_ACTIONS) break;
             }
-
-            reward = rollout(undoRecords);
-
+            reward = rollout(undo);
         } finally {
-            undoAll(undoRecords);
-
-            // Compare immediately after undoing all simulated actions.
-            String stateKeyAfter = stateKey();
-
-//            if (!stateKeyBefore.equals(stateKeyAfter)) {
-//                System.out.println("BOARD RESTORATION FAILED");
-//                System.out.println("Before: " + stateKeyBefore);
-//                System.out.println("After:  " + stateKeyAfter);
-//            } else {
-//                System.out.println("Board restoration OK");
-//            }
-
-            // Recreate the simulator only after checking restoration.
-            simulator = new PylosGameSimulator(
-                    startingState, startingColor, board
-            );
+            undoAll(undo);
+            String after = stateKey();
+            if (!before.equals(after)) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
+            simulator = new PylosGameSimulator(startState, startColor, board);
         }
-
         tree.backpropagate(path, reward);
     }
 
-    /** Runs a random legal playout from the current search leaf and restores it. */
-    private double rollout(List<UndoRecord> undoRecords) {
-        int rolloutStart = undoRecords.size();
-        int actions = 0;
+    private double rollout(List<UndoRecord> undo) {
+        int start = undo.size(), actions = 0;
         while (!isTerminal() && actions < MAX_ROLLOUT_ACTIONS) {
-            List<MCTSTree.Action> actionsAvailable = legalActions();
-            if (actionsAvailable.isEmpty()) {
-                throw new IllegalStateException("No legal actions during rollout in " + simulator.getState());
-            }
-            MCTSTree.Action action = actionsAvailable.get(getRandom().nextInt(actionsAvailable.size()));
-            undoRecords.add(apply(action));
+            List<MCTSTree.Action> legal = legalActions();
+            if (legal.isEmpty()) throw new IllegalStateException("No rollout actions in " + simulator.getState());
+            undo.add(apply(chooseRolloutAction(legal)));
             actions++;
         }
+        double reward;
+        if (simulator.getState() == PylosGameState.COMPLETED)
+            reward = simulator.getWinner() == PLAYER_COLOR ? WIN_SCORE : LOSS_SCORE;
+        else if (simulator.getState() == PylosGameState.DRAW) reward = DRAW_SCORE;
+        else reward = DRAW_SCORE; // A depth cutoff is unknown, not a proven loss.
+        for (int i = undo.size() - 1; i >= start; i--) undo(undo.remove(i));
+        return reward;
+    }
 
-        double result;
-        if (simulator.getState() == PylosGameState.COMPLETED) {
-            result = simulator.getWinner() == PLAYER_COLOR ? WIN_SCORE : LOSS_SCORE;
-        } else if (simulator.getState() == PylosGameState.DRAW) {
-            result = DRAW_SCORE;
-        } else {
-            result = LOSS_SCORE;
+    /** Immediate wins are mandatory; otherwise prefer square completion 75% of the time. */
+    private MCTSTree.Action chooseRolloutAction(List<MCTSTree.Action> available) {
+        PylosPlayerColor mover = simulator.getColor();
+        List<MCTSTree.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();
+        MCTSTree.Action winning = null;
+        for (MCTSTree.Action action : available) {
+            UndoRecord record = apply(action);
+            PylosGameState state = simulator.getState();
+            PylosPlayerColor winner = simulator.getWinner();
+            if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
+            if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
+            if (state == PylosGameState.REMOVE_FIRST) squareMoves.add(action);
+            undo(record);
+            // Simulator undo methods restore board/state but do not clear the
+            // simulator's terminal winner field. Recreate it after a probe.
+            simulator = new PylosGameSimulator(record.state, record.color, board);
+            if (winning != null) break;
         }
-
-        // Rollout actions must be undone before returning to the tree leaf;
-        // the tree-path actions are undone by runOneIteration's finally block.
-        for (int i = undoRecords.size() - 1; i >= rolloutStart; i--) {
-            undo(undoRecords.remove(i));
-        }
-        return result;
+        if (winning != null) return winning;
+        if (!squareMoves.isEmpty() && searchRandom.nextDouble() < 0.75)
+            return squareMoves.get(searchRandom.nextInt(squareMoves.size()));
+        List<MCTSTree.Action> choices = safe.isEmpty() ? available : safe;
+        return choices.get(searchRandom.nextInt(choices.size()));
     }
 
     private List<MCTSTree.Action> legalActions() {
         PylosGameState state = simulator.getState();
         PylosPlayerColor color = simulator.getColor();
         List<MCTSTree.Action> actions = new ArrayList<>();
-
         if (state == PylosGameState.MOVE) {
-            // Upward moves use already-placed spheres. Generate placements
-            // separately using getReserve(), matching the framework's API and
-            // avoiding duplicate equivalent actions for every reserve sphere.
             for (PylosSphere sphere : board.getSpheres(color)) {
-                if (sphere.isReserve() || !sphere.canMove()) {
-                    continue;
-                }
-                for (PylosLocation location : board.getLocations()) {
-                    if (sphere.canMoveTo(location)) {
-                        actions.add(MCTSTree.Action.move(sphere, location));
-                    }
-                }
+                if (sphere.isReserve() || !sphere.canMove()) continue;
+                for (PylosLocation location : board.getLocations())
+                    if (sphere.canMoveTo(location)) actions.add(MCTSTree.Action.move(sphere, location));
             }
-            PylosSphere reserveSphere = board.getReserve(color);
-            if (reserveSphere != null) {
-                for (PylosLocation location : board.getLocations()) {
-                    if (location.isUsable()) {
-                        actions.add(MCTSTree.Action.placement(reserveSphere, location));
-                    }
-                }
-            }
+            PylosSphere reserve = board.getReserve(color);
+            if (reserve != null) for (PylosLocation location : board.getLocations())
+                if (location.isUsable()) actions.add(MCTSTree.Action.placement(reserve, location));
         } else if (state == PylosGameState.REMOVE_FIRST) {
-            for (PylosSphere sphere : board.getSpheres(color)) {
-                if (!sphere.isReserve() && sphere.canRemove()) {
-                    actions.add(MCTSTree.Action.removeFirst(sphere));
-                }
-            }
+            for (PylosSphere sphere : board.getSpheres(color))
+                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTree.Action.removeFirst(sphere));
         } else if (state == PylosGameState.REMOVE_SECOND) {
-            for (PylosSphere sphere : board.getSpheres(color)) {
-                if (!sphere.isReserve() && sphere.canRemove()) {
-                    actions.add(MCTSTree.Action.removeSecond(sphere));
-                }
-            }
+            for (PylosSphere sphere : board.getSpheres(color))
+                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTree.Action.removeSecond(sphere));
             actions.add(MCTSTree.Action.pass());
         }
         return actions;
     }
 
     private UndoRecord apply(MCTSTree.Action action) {
-        PylosGameState previousState = simulator.getState();
-        PylosPlayerColor previousColor = simulator.getColor();
-        PylosLocation previousLocation = action.sphere == null ? null : action.sphere.getLocation();
-
+        PylosGameState state = simulator.getState();
+        PylosPlayerColor color = simulator.getColor();
+        PylosLocation location = action.sphere == null ? null : action.sphere.getLocation();
         switch (action.type) {
-            case PLACEMENT:
-            case MOVE:
-                simulator.moveSphere(action.sphere, action.location);
-                break;
-            case REMOVE_FIRST:
-            case REMOVE_SECOND:
-                simulator.removeSphere(action.sphere);
-                break;
-            case PASS:
-                simulator.pass();
-                break;
-            default:
-                throw new IllegalStateException("Unknown action type: " + action.type);
+            case PLACEMENT: case MOVE: simulator.moveSphere(action.sphere, action.location); break;
+            case REMOVE_FIRST: case REMOVE_SECOND: simulator.removeSphere(action.sphere); break;
+            case PASS: simulator.pass(); break;
+            default: throw new IllegalStateException("Unknown action: " + action.type);
         }
-        return new UndoRecord(action, previousState, previousColor, previousLocation);
+        return new UndoRecord(action, state, color, location);
     }
 
-    private void undo(UndoRecord record) {
-        MCTSTree.Action action = record.action;
-        switch (action.type) {
-            case PLACEMENT:
-                simulator.undoAddSphere(action.sphere, record.previousState, record.previousColor);
-                break;
-            case MOVE:
-                simulator.undoMoveSphere(action.sphere, record.previousLocation,
-                        record.previousState, record.previousColor);
-                break;
-            case REMOVE_FIRST:
-                simulator.undoRemoveFirstSphere(action.sphere, record.previousLocation,
-                        record.previousState, record.previousColor);
-                break;
-            case REMOVE_SECOND:
-                simulator.undoRemoveSecondSphere(action.sphere, record.previousLocation,
-                        record.previousState, record.previousColor);
-                break;
-            case PASS:
-                simulator.undoPass(record.previousState, record.previousColor);
-                break;
-            default:
-                throw new IllegalStateException("Unknown action type: " + action.type);
+    private void undo(UndoRecord r) {
+        switch (r.action.type) {
+            case PLACEMENT: simulator.undoAddSphere(r.action.sphere, r.state, r.color); break;
+            case MOVE: simulator.undoMoveSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case REMOVE_FIRST: simulator.undoRemoveFirstSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case REMOVE_SECOND: simulator.undoRemoveSecondSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case PASS: simulator.undoPass(r.state, r.color); break;
+            default: throw new IllegalStateException("Unknown action: " + r.action.type);
         }
     }
 
     private void undoAll(List<UndoRecord> records) {
-        for (int i = records.size() - 1; i >= 0; i--) {
-            undo(records.get(i));
-        }
+        for (int i = records.size() - 1; i >= 0; i--) undo(records.get(i));
         records.clear();
     }
 
     private boolean isTerminal() {
-        PylosGameState state = simulator.getState();
-        return state == PylosGameState.COMPLETED
-                || state == PylosGameState.DRAW
-                || state == PylosGameState.ABORTED;
+        PylosGameState s = simulator.getState();
+        return s == PylosGameState.COMPLETED || s == PylosGameState.DRAW || s == PylosGameState.ABORTED;
     }
 
     private String stateKey() {
-        StringBuilder key = new StringBuilder();
-        key.append(simulator.getState()).append('|').append(simulator.getColor()).append('|');
+        StringBuilder key = new StringBuilder().append(simulator.getState()).append('|').append(simulator.getColor()).append('|');
         for (PylosLocation location : board.getLocations()) {
             PylosSphere sphere = location.getSphere();
-            if (sphere == null) {
-                key.append("-;");
-            } else {
-                key.append(sphere.PLAYER_COLOR).append(':').append(sphere.ID).append(';');
-            }
+            if (sphere == null) key.append("-;");
+            else key.append(sphere.PLAYER_COLOR).append(':').append(sphere.ID).append(';');
         }
         return key.toString();
     }
 
-    private void advanceTreeAfterRealAction() {
-        // The simulator used for search has been restored to the pre-action
-        // state. The selected child's post-action state was recorded during
-        // search, so advance using that stored state rather than reading the
-        // stale simulator phase/color after the real game has changed the board.
-            //System.out.println("Before advancing tree:");
-            //System.out.println("AI color: " + PLAYER_COLOR);
-            //System.out.println("Simulator color: " + simulator.getColor());
-            //System.out.println("Simulator state: " + simulator.getState());
-            //System.out.println("Simulator state key: " + stateKey());
-
-            tree.advanceRoot(chosenAction);
-
-            //System.out.println("After advancing tree:");
-            //System.out.println("Root player: " + tree.getRoot().getColor());
-            //System.out.println("Root state key: " + tree.getRoot().getStateKey());
-    }
-
     private static final class UndoRecord {
         private final MCTSTree.Action action;
-        private final PylosGameState previousState;
-        private final PylosPlayerColor previousColor;
-        private final PylosLocation previousLocation;
-
-        private UndoRecord(MCTSTree.Action action, PylosGameState previousState, PylosPlayerColor previousColor, PylosLocation previousLocation) {
-            this.action = action;
-            this.previousState = previousState;
-            this.previousColor = previousColor;
-            this.previousLocation = previousLocation;
+        private final PylosGameState state;
+        private final PylosPlayerColor color;
+        private final PylosLocation location;
+        private UndoRecord(MCTSTree.Action action, PylosGameState state, PylosPlayerColor color, PylosLocation location) {
+            this.action = action; this.state = state; this.color = color; this.location = location;
         }
     }
 }

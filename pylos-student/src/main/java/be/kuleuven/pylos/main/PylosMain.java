@@ -81,15 +81,16 @@ public class PylosMain {
     }
 
     public static void startBattle() {
-        int nRuns = 100;
-        PylosPlayerType p1 = new PylosPlayerType("Student1") {
+        int nRuns = 200;
+        PylosPlayerType p1 = new PylosPlayerType("OtherPlayer") {
             @Override
             public PylosPlayer create() {
-                return new StudentPlayer();
+                return new PylosPlayerMiniMax(4);
+                //return new StudentPlayer();
             }
         };
 
-        PylosPlayerType p2 = new PylosPlayerType("Student2") {
+        PylosPlayerType p2 = new PylosPlayerType("Student") {
             @Override
             public PylosPlayer create() {
                 return new StudentPlayer();
