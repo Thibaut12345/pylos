@@ -81,7 +81,7 @@ public class PylosMain {
     }
 
     public static void startBattle() {
-        int nRuns = 200;
+        int nRuns = 100;
         PylosPlayerType p1 = new PylosPlayerType("OtherPlayer") {
             @Override
             public PylosPlayer create() {

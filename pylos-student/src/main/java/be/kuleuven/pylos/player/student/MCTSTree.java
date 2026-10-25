@@ -12,28 +12,50 @@ import java.util.Random;
 public final class MCTSTree {
     public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(2.0);
 
-    public PylosPlayerColor getRewardPerspective() {
-        return rewardPerspective;
-    }
+    public PylosPlayerColor getRewardPerspective() { return rewardPerspective; }
 
     public enum ActionType { PLACEMENT, MOVE, REMOVE_FIRST, REMOVE_SECOND, PASS }
 
+    /**
+     * Actions can hold live engine references (rollouts/game execution) or canonical
+     * location indices (tree storage). Canonical actions never retain sphere IDs or
+     * orientation-specific PylosLocation references.
+     */
     public static final class Action {
         public final ActionType type;
         public final PylosSphere sphere;
         public final PylosLocation location;
-        private Action(ActionType type, PylosSphere sphere, PylosLocation location) {
-            this.type = type; this.sphere = sphere; this.location = location;
+        private final boolean canonical;
+        private final int fromIndex;
+        private final int toIndex;
+
+        private Action(ActionType type, PylosSphere sphere, PylosLocation location,
+                       boolean canonical, int fromIndex, int toIndex) {
+            this.type = type;
+            this.sphere = sphere;
+            this.location = location;
+            this.canonical = canonical;
+            this.fromIndex = fromIndex;
+            this.toIndex = toIndex;
         }
-        public static Action placement(PylosSphere s, PylosLocation l) { return new Action(ActionType.PLACEMENT, s, l); }
-        public static Action move(PylosSphere s, PylosLocation l) { return new Action(ActionType.MOVE, s, l); }
-        public static Action removeFirst(PylosSphere s) { return new Action(ActionType.REMOVE_FIRST, s, null); }
-        public static Action removeSecond(PylosSphere s) { return new Action(ActionType.REMOVE_SECOND, s, null); }
-        public static Action pass() { return new Action(ActionType.PASS, null, null); }
+        public static Action placement(PylosSphere s, PylosLocation l) { return actual(ActionType.PLACEMENT, s, l); }
+        public static Action move(PylosSphere s, PylosLocation l) { return actual(ActionType.MOVE, s, l); }
+        public static Action removeFirst(PylosSphere s) { return actual(ActionType.REMOVE_FIRST, s, null); }
+        public static Action removeSecond(PylosSphere s) { return actual(ActionType.REMOVE_SECOND, s, null); }
+        public static Action pass() { return actual(ActionType.PASS, null, null); }
+        private static Action actual(ActionType type, PylosSphere sphere, PylosLocation location) {
+            return new Action(type, sphere, location, false, -1, -1);
+        }
+        static Action canonical(ActionType type, int fromIndex, int toIndex) {
+            return new Action(type, null, null, true, fromIndex, toIndex);
+        }
         public boolean sameAs(Action other) {
-            return other != null && type == other.type && sphere == other.sphere && location == other.location;
+            if (other == null || type != other.type || canonical != other.canonical) return false;
+            if (canonical) return fromIndex == other.fromIndex && toIndex == other.toIndex;
+            return sphere == other.sphere && location == other.location;
         }
         @Override public String toString() {
+            if (canonical) return type + "[from=" + fromIndex + ", to=" + toIndex + "]";
             switch (type) {
                 case PLACEMENT: case MOVE: return type + "(" + sphere + " -> " + location + ")";
                 case REMOVE_FIRST: case REMOVE_SECOND: return type + "(" + sphere + ")";
@@ -63,7 +85,7 @@ public final class MCTSTree {
             if (key == null || color == null) throw new IllegalArgumentException("Observed state and player are required");
             if (stateKey != null) {
                 if (!stateKey.equals(key) || playerToMove != color)
-                    throw new IllegalStateException("Node state mismatch: same action produced a different state");
+                    throw new IllegalStateException("Node state mismatch: same canonical action produced a different state");
                 return;
             }
             stateKey = key; playerToMove = color;
@@ -99,6 +121,7 @@ public final class MCTSTree {
         return null;
     }
 
+    /** Legal actions supplied here must be canonical descriptors, not engine references. */
     public Node selectOrExpand(Node node, List<Action> legal) {
         if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
         if (node.unexpandedActions == null) {
@@ -113,7 +136,6 @@ public final class MCTSTree {
         for (Node child : node.children) {
             if (child.visits == 0) return child;
             double exploitation = child.totalReward / child.visits;
-            // The opponent chooses actions that minimize the root player's reward.
             if (node.playerToMove != rewardPerspective) exploitation = -exploitation;
             double exploration = explorationConstant * Math.sqrt(Math.log(Math.max(1, node.visits)) / child.visits);
             double value = exploitation + exploration;
@@ -141,11 +163,12 @@ public final class MCTSTree {
         return best == null ? null : best.action;
     }
 
-    public void advanceRoot(Action action) {
-        if (action == null) throw new IllegalArgumentException("Action cannot be null");
+    public void advanceRoot(Action canonicalAction) {
+        if (canonicalAction == null || !canonicalAction.canonical)
+            throw new IllegalArgumentException("A canonical tree action is required");
         Node selected = null;
-        for (Node child : root.children) if (child.action != null && child.action.sameAs(action)) { selected = child; break; }
-        if (selected == null) throw new IllegalStateException("Selected action is not a child of the current root");
+        for (Node child : root.children) if (child.action != null && child.action.sameAs(canonicalAction)) { selected = child; break; }
+        if (selected == null) throw new IllegalStateException("Selected canonical action is not a child of the current root");
         if (selected.stateKey == null || selected.playerToMove == null) throw new IllegalStateException("Selected child has no observed state");
         root = copyAsRoot(selected, selected.stateKey, selected.playerToMove);
     }
