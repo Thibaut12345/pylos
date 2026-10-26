@@ -6,6 +6,8 @@ import be.kuleuven.pylos.game.PylosSphere;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Random;
 
 /** UCT tree; all rewards are measured from the fixed root player's perspective. */
@@ -95,30 +97,75 @@ public final class MCTSTree {
     private final Random random;
     private final double explorationConstant;
     private final PylosPlayerColor rewardPerspective;
+
+    /* persistentRoot is never advanced. root is the position currently being searched. */
+    private final Node persistentRoot;
     private Node root;
+    private final Map<String, Node> stateIndex = new HashMap<>();
 
     public MCTSTree(PylosPlayerColor player, String key, Random random) {
-        this(player, key, random, DEFAULT_EXPLORATION_CONSTANT);
+        this(player, key, player, random, DEFAULT_EXPLORATION_CONSTANT);
     }
     public MCTSTree(PylosPlayerColor player, String key, Random random, double explorationConstant) {
-        if (player == null || key == null || random == null) throw new IllegalArgumentException("Root player, key and RNG are required");
-        if (explorationConstant < 0.0 || Double.isNaN(explorationConstant)) throw new IllegalArgumentException("Invalid exploration constant");
-        this.random = random; this.explorationConstant = explorationConstant; rewardPerspective = player;
-        root = new Node(null, null, key, player);
+        this(player, key, player, random, explorationConstant);
     }
-    public Node getRoot() { return root; }
 
+    /**
+     * Creates a colour-specific tree with an independent reward perspective and
+     * an explicitly specified player-to-move at the initial state.
+     */
+    public MCTSTree(PylosPlayerColor rewardPerspective, String key,
+                    PylosPlayerColor playerToMove, Random random) {
+        this(rewardPerspective, key, playerToMove, random, DEFAULT_EXPLORATION_CONSTANT);
+    }
+
+    public MCTSTree(PylosPlayerColor rewardPerspective, String key,
+                    PylosPlayerColor playerToMove, Random random, double explorationConstant) {
+        if (rewardPerspective == null || playerToMove == null || key == null || random == null)
+            throw new IllegalArgumentException("Reward perspective, root player, key and RNG are required");
+        if (explorationConstant < 0.0 || Double.isNaN(explorationConstant))
+            throw new IllegalArgumentException("Invalid exploration constant");
+        this.random = random;
+        this.explorationConstant = explorationConstant;
+        this.rewardPerspective = rewardPerspective;
+        persistentRoot = new Node(null, null, key, playerToMove);
+        root = persistentRoot;
+        indexState(persistentRoot);
+    }
+
+    public Node getRoot() { return root; }
+    public Node getPersistentRoot() { return persistentRoot; }
+
+    /**
+     * Repositions the active search root without deleting or copying any nodes.
+     * The state index also permits reuse of positions first encountered from a
+     * detached root (notably DARK's first turn, which is called after LIGHT moves).
+     */
     public void ensureRoot(PylosPlayerColor player, String key) {
         if (player == null || key == null) throw new IllegalArgumentException("Root player and key are required");
         if (player == root.playerToMove && key.equals(root.stateKey)) return;
-        Node match = findState(root, player, key);
-        root = match == null ? new Node(null, null, key, player) : copyAsRoot(match, key, player);
+        Node match = stateIndex.get(stateId(player, key));
+        if (match == null) {
+            match = new Node(null, null, key, player);
+            indexState(match);
+        }
+        root = match;
     }
-    private Node findState(Node node, PylosPlayerColor player, String key) {
-        if (node == null) return null;
-        if (player == node.playerToMove && key.equals(node.stateKey)) return node;
-        for (Node child : node.children) { Node found = findState(child, player, key); if (found != null) return found; }
-        return null;
+
+    /** Record the actual state reached by a canonical action and index it for later games. */
+    public void observeState(Node node, String key, PylosPlayerColor player) {
+        if (node == null) throw new IllegalArgumentException("Node is required");
+        node.setObservedState(key, player);
+        indexState(node);
+    }
+
+    private void indexState(Node node) {
+        if (node.stateKey != null && node.playerToMove != null)
+            stateIndex.putIfAbsent(stateId(node.playerToMove, node.stateKey), node);
+    }
+
+    private static String stateId(PylosPlayerColor player, String key) {
+        return player.name() + "|" + key;
     }
 
     /** Legal actions supplied here must be canonical descriptors, not engine references. */
@@ -170,14 +217,7 @@ public final class MCTSTree {
         for (Node child : root.children) if (child.action != null && child.action.sameAs(canonicalAction)) { selected = child; break; }
         if (selected == null) throw new IllegalStateException("Selected canonical action is not a child of the current root");
         if (selected.stateKey == null || selected.playerToMove == null) throw new IllegalStateException("Selected child has no observed state");
-        root = copyAsRoot(selected, selected.stateKey, selected.playerToMove);
-    }
-
-    private Node copyAsRoot(Node old, String key, PylosPlayerColor player) {
-        Node copy = new Node(null, null, key, player);
-        copy.visits = old.visits; copy.totalReward = old.totalReward; copy.unexpandedActions = old.unexpandedActions;
-        copy.children.addAll(old.children);
-        for (Node child : copy.children) child.parent = copy;
-        return copy;
+        root = selected;
+        indexState(selected);
     }
 }

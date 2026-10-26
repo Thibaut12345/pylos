@@ -17,6 +17,8 @@ public class StudentPlayer extends PylosPlayer {
 
     private PylosGameSimulator simulator;
     private PylosBoard board;
+    private MCTSTree lightTree;
+    private MCTSTree darkTree;
     private MCTSTree tree;
     private MCTSTree.Action chosenTreeAction;
 
@@ -57,18 +59,40 @@ public class StudentPlayer extends PylosPlayer {
     private void init(PylosGameState state, PylosBoard board) {
         this.board = board;
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
-        String key = stateKey();
-        if (tree == null || tree.getRewardPerspective() != PLAYER_COLOR) {
-            tree = new MCTSTree(PLAYER_COLOR, key, searchRandom);
-        } else {
-            tree.ensureRoot(simulator.getColor(), key);
-        }
+        ensureTreesInitialized();
+        tree = treeFor(PLAYER_COLOR);
+        tree.ensureRoot(simulator.getColor(), stateKey());
     }
 
     @Override public void init(PylosPlayerColor playerColor, PylosPlayer other,
                                PylosPlayerObserver observer, Random random) {
         super.init(playerColor, other, observer, random);
-        tree = null;
+        // Do not clear either tree here: this method is called again when the
+        // same StudentPlayer instance is assigned the opposite colour.
+        ensureTreesInitialized();
+        tree = treeFor(PLAYER_COLOR);
+    }
+
+    private void ensureTreesInitialized() {
+        if (lightTree != null && darkTree != null) return;
+        String emptyBoardKey = initialStateKey();
+        if (lightTree == null)
+            lightTree = new MCTSTree(PylosPlayerColor.LIGHT, emptyBoardKey,
+                    PylosPlayerColor.LIGHT, searchRandom);
+        if (darkTree == null)
+            darkTree = new MCTSTree(PylosPlayerColor.DARK, emptyBoardKey,
+                    PylosPlayerColor.LIGHT, searchRandom);
+    }
+
+    private MCTSTree treeFor(PylosPlayerColor color) {
+        return color == PylosPlayerColor.LIGHT ? lightTree : darkTree;
+    }
+
+    /** The standard game begins in MOVE with LIGHT to move and an empty 30-location board. */
+    private static String initialStateKey() {
+        StringBuilder empty = new StringBuilder(30);
+        for (int i = 0; i < 30; i++) empty.append('0');
+        return PylosGameState.MOVE.name() + "|" + PylosPlayerColor.LIGHT.name() + "|" + empty;
     }
 
     /** Returns a live engine action and retains its canonical descriptor for tree advancement. */
@@ -100,7 +124,7 @@ public class StudentPlayer extends PylosPlayer {
                 MCTSTree.Node child = tree.selectOrExpand(node, canonicalLegal);
                 MCTSTree.Action actualAction = PylosSymmetry.toActualAction(child.getAction(), actualLegal, position);
                 undo.add(apply(actualAction));
-                child.setObservedState(stateKey(), simulator.getColor());
+                tree.observeState(child, stateKey(), simulator.getColor());
                 node = child;
                 path.add(node);
                 if (node.getVisits() == 0 || ++depth >= MAX_ROLLOUT_ACTIONS) break;
