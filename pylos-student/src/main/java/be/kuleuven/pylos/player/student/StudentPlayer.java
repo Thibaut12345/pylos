@@ -160,9 +160,8 @@ public class StudentPlayer extends PylosPlayer {
     private double rollout(List<UndoRecord> undo) {
         int start = undo.size(), actions = 0;
         while (!isTerminal() && actions < MAX_ROLLOUT_ACTIONS) {
-            List<MCTSTree.Action> legal = legalActions();
-            if (legal.isEmpty()) throw new IllegalStateException("No rollout actions in " + simulator.getState());
-            undo.add(apply(chooseRolloutAction(legal)));
+            // Avoid creating a whole list of Action objects at each rollout step.
+            undo.add(apply(randomRolloutAction()));
             actions++;
         }
         double reward;
@@ -180,31 +179,89 @@ public class StudentPlayer extends PylosPlayer {
     }
 
 
-    // Fast tactical rollout: inspect a move directly without applying and undoing
-    // every candidate. This removes the biggest allocation/simulation hotspot.
-    private MCTSTree.Action chooseRolloutAction(List<MCTSTree.Action> available) {
-        PylosPlayerColor mover = simulator.getColor();
-        MCTSTree.Action chosen = available.get(searchRandom.nextInt(available.size()));
-        int squareCount = 0;
+    /**
+     * Sample one legal rollout action without allocating a List<Action>.
+     * Uses reservoir sampling so each legal move has the same probability.
+     * Retains the 75% preference for completing a square with a reserve ball.
+     */
+    private MCTSTree.Action randomRolloutAction() {
+        PylosGameState state = simulator.getState();
+        PylosPlayerColor color = simulator.getColor();
 
-        for (MCTSTree.Action action : available) {
-            if (action.type != MCTSTree.ActionType.PLACEMENT &&
-                action.type != MCTSTree.ActionType.MOVE) continue;
+        if (state == PylosGameState.REMOVE_FIRST ||
+                state == PylosGameState.REMOVE_SECOND) {
+            PylosSphere selected = null;
+            int count = 0;
+            for (PylosSphere sphere : board.getSpheres(color)) {
+                if (!sphere.isReserve() && sphere.canRemove()) {
+                    if (searchRandom.nextInt(++count) == 0) selected = sphere;
+                }
+            }
+            // PASS is also a legal choice during the second removal.
+            if (state == PylosGameState.REMOVE_SECOND &&
+                    searchRandom.nextInt(count + 1) == 0) {
+                return MCTSTree.Action.pass();
+            }
+            if (selected == null) throw new IllegalStateException("No removable sphere");
+            return state == PylosGameState.REMOVE_FIRST
+                    ? MCTSTree.Action.removeFirst(selected)
+                    : MCTSTree.Action.removeSecond(selected);
+        }
 
-            // On a move, removing the sphere may affect square counts.
-            // Only regard placements as immediately certain square completions.
-            if (action.type == MCTSTree.ActionType.MOVE) continue;
-            for (PylosSquare square : action.location.getSquares()) {
-                if (square.getInSquare() == 3 &&
-                    square.getInSquare(mover) == 3) {
-                    if (searchRandom.nextInt(++squareCount) == 0) chosen = action;
-                    break;
+        if (state != PylosGameState.MOVE)
+            throw new IllegalStateException("No rollout action in " + state);
+
+        PylosSphere selectedSphere = null;
+        PylosLocation selectedLocation = null;
+        boolean selectedReserve = false;
+        int count = 0;
+
+        // Include all legal upward moves in the uniform sample.
+        for (PylosSphere sphere : board.getSpheres(color)) {
+            if (sphere.isReserve() || !sphere.canMove()) continue;
+            for (PylosLocation location : board.getLocations()) {
+                if (sphere.canMoveTo(location)) {
+                    if (searchRandom.nextInt(++count) == 0) {
+                        selectedSphere = sphere;
+                        selectedLocation = location;
+                        selectedReserve = false;
+                    }
                 }
             }
         }
 
-        if (squareCount > 0 && searchRandom.nextDouble() < 0.75) return chosen;
-        return available.get(searchRandom.nextInt(available.size()));
+        PylosSphere reserve = board.getReserve(color);
+        PylosLocation squareLocation = null;
+        int squares = 0;
+        if (reserve != null) {
+            for (PylosLocation location : board.getLocations()) {
+                if (!location.isUsable()) continue;
+                if (searchRandom.nextInt(++count) == 0) {
+                    selectedSphere = reserve;
+                    selectedLocation = location;
+                    selectedReserve = true;
+                }
+
+                // Check only placement squares; upward moves may change their source.
+                for (PylosSquare square : location.getSquares()) {
+                    if (square.getInSquare() == 3 &&
+                            square.getInSquare(color) == 3) {
+                        if (searchRandom.nextInt(++squares) == 0)
+                            squareLocation = location;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (squareLocation != null && searchRandom.nextDouble() < 0.75)
+            return MCTSTree.Action.placement(reserve, squareLocation);
+
+        if (selectedSphere == null)
+            throw new IllegalStateException("No legal rollout move");
+        return selectedReserve
+                ? MCTSTree.Action.placement(selectedSphere, selectedLocation)
+                : MCTSTree.Action.move(selectedSphere, selectedLocation);
     }
 
     private List<MCTSTree.Action> legalActions() {
