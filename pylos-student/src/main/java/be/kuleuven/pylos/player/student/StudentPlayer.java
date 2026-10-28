@@ -37,7 +37,7 @@ public class StudentPlayer extends PylosPlayer {
         }
         getObserver().checkingMoveSphere(chosenAction.sphere, chosenAction.location);
         game.moveSphere(chosenAction.sphere, chosenAction.location);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     @Override public void doRemove(PylosGameIF game, PylosBoard board) {
@@ -47,7 +47,7 @@ public class StudentPlayer extends PylosPlayer {
             throw new IllegalStateException("MCTS did not return a legal first-removal action");
         getObserver().checkingRemoveSphere(chosenAction.sphere);
         game.removeSphere(chosenAction.sphere);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     @Override public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
@@ -59,7 +59,7 @@ public class StudentPlayer extends PylosPlayer {
             getObserver().checkingRemoveSphere(chosenAction.sphere);
             game.removeSphere(chosenAction.sphere);
         } else throw new IllegalStateException("Unexpected second-removal action: " + chosenAction);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     private void init(PylosGameState state, PylosBoard board) {
@@ -102,6 +102,13 @@ public class StudentPlayer extends PylosPlayer {
 
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
+        // One-ply tactical check at the root. If there is an immediate
+        // terminal victory, play it instead of spending time on rollouts.
+        MCTSTree.Action directWin = findImmediateWin();
+        if (directWin != null) {
+            chosenTreeAction = null; // Root will be synchronized next callback.
+            return directWin;
+        }
         long start = System.nanoTime();
         long perDecision = simulator.getState() == PylosGameState.MOVE
                 ? MOVE_TIME_NS : REMOVE_TIME_NS;
@@ -126,6 +133,30 @@ public class StudentPlayer extends PylosPlayer {
         return PylosSymmetry.toActualAction(chosenTreeAction, legalActions(), position);
     }
 
+    private MCTSTree.Action findImmediateWin() {
+        // Only needed for MOVE states. Simulator terminal status changes after a move.
+        if (simulator.getState() != PylosGameState.MOVE) return null;
+        List<MCTSTree.Action> legal = legalActions();
+        PylosGameState startingState = simulator.getState();
+        PylosPlayerColor startingColor = simulator.getColor();
+        MCTSTree.Action winning = null;
+        for (MCTSTree.Action action : legal) {
+            UndoRecord record = apply(action);
+            try {
+                if (simulator.getState() == PylosGameState.COMPLETED &&
+                        simulator.getWinner() == PLAYER_COLOR) {
+                    winning = action;
+                    break;
+                }
+            } finally {
+                undo(record);
+            }
+        }
+        // Undo resets the phase and player but not simulator.winner.
+        simulator = new PylosGameSimulator(startingState, startingColor, board);
+        return winning;
+    }
+
     private void runOneIteration(MCTSTree.Node root) {
         List<MCTSTree.Node> path = new ArrayList<>();
         List<UndoRecord> undo = new ArrayList<>();
@@ -142,7 +173,7 @@ public class StudentPlayer extends PylosPlayer {
                 PylosSymmetry.Position position = canonicalPosition();
                 // The canonical legal list is only required the FIRST time we expand a node.
                 List<MCTSTree.Action> canonicalLegal = node.needsActions()
-                        ? canonicalActions(actualLegal, position) : null;
+                        ? orderedCanonicalActions(actualLegal, position) : null;
                 MCTSTree.Node child = tree.selectOrExpand(node, canonicalLegal);
                 MCTSTree.Action actualAction = PylosSymmetry.toActualAction(child.getAction(), actualLegal, position);
                 undo.add(apply(actualAction));
@@ -330,10 +361,36 @@ public class StudentPlayer extends PylosPlayer {
         return actions;
     }
 
-    private List<MCTSTree.Action> canonicalActions(List<MCTSTree.Action> actual, PylosSymmetry.Position position) {
+    private List<MCTSTree.Action> orderedCanonicalActions(
+            List<MCTSTree.Action> actual, PylosSymmetry.Position position) {
+        // Sort actual moves first, then convert to canonical actions.
+        // Low scores first: the tree removes the LAST unexpanded action.
+        actual.sort((a, b) -> Integer.compare(tacticalScore(a), tacticalScore(b)));
         List<MCTSTree.Action> canonical = new ArrayList<>(actual.size());
-        for (MCTSTree.Action action : actual) canonical.add(PylosSymmetry.toCanonicalAction(action, position));
+        for (MCTSTree.Action action : actual)
+            canonical.add(PylosSymmetry.toCanonicalAction(action, position));
         return canonical;
+    }
+
+    private int tacticalScore(MCTSTree.Action action) {
+        switch (action.type) {
+            case PLACEMENT:
+            case MOVE:
+                int score = scoreRolloutMove(
+                        action.sphere, action.location, simulator.getColor());
+                // Placing your final reserve sphere immediately loses in this engine.
+                if (action.type == MCTSTree.ActionType.PLACEMENT &&
+                        board.getReservesSize(simulator.getColor()) == 1)
+                    score -= 100_000;
+                return score;
+            case REMOVE_FIRST:
+            case REMOVE_SECOND:
+                return 20;
+            case PASS:
+                return 1;
+            default:
+                return 1;
+        }
     }
 
     private PylosSymmetry.Position canonicalPosition() {
