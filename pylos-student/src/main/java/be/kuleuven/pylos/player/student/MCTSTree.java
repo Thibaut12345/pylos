@@ -4,7 +4,6 @@ import be.kuleuven.pylos.game.PylosLocation;
 import be.kuleuven.pylos.game.PylosPlayerColor;
 import be.kuleuven.pylos.game.PylosSphere;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
@@ -135,7 +134,8 @@ public final class MCTSTree {
         if (node.unexpandedActions == null) {
             if (legal == null || legal.isEmpty()) throw new IllegalArgumentException("Legal actions are required for expansion");
             node.unexpandedActions = new ArrayList<>(legal);
-            Collections.shuffle(node.unexpandedActions, random);
+            // StudentPlayer supplies actions in ascending tactical priority.
+            // Removing from the end expands the most promising move first.
         }
         if (!node.unexpandedActions.isEmpty()) {
             Node child = new Node(node, node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
