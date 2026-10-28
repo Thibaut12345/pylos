@@ -10,7 +10,7 @@ import java.util.Random;
 
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentPlayer extends PylosPlayer {
-    private static final int NUMBER_OF_SIMULATIONS = 512;
+    private static final int NUMBER_OF_SIMULATIONS = 10_000;
     private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
     private static final int MAX_ROLLOUT_ACTIONS = 1024;
     private final Random searchRandom = new Random();
@@ -72,7 +72,7 @@ public class StudentPlayer extends PylosPlayer {
 
     private void ensureTreesInitialized() {
         if (lightTree != null && darkTree != null) return;
-        String emptyBoardKey = initialStateKey();
+        long emptyBoardKey = initialStateKey();
         if (lightTree == null) lightTree = new MCTSTree(PylosPlayerColor.LIGHT, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
         if (darkTree == null) darkTree = new MCTSTree(PylosPlayerColor.DARK, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
     }
@@ -81,10 +81,9 @@ public class StudentPlayer extends PylosPlayer {
         return color == PylosPlayerColor.LIGHT ? lightTree : darkTree;
     }
 
-    private static String initialStateKey() {
-        StringBuilder empty = new StringBuilder(30);
-        for (int i = 0; i < 30; i++) empty.append('0');
-        return PylosGameState.MOVE.name() + "|" + PylosPlayerColor.LIGHT.name() + "|" + empty;
+    private static long initialStateKey() {
+        // Empty board, LIGHT to move, MOVE phase: all encoded bits are zero.
+        return 0L;
     }
 
     private MCTSTree.Action searchBestAction() {
@@ -103,7 +102,7 @@ public class StudentPlayer extends PylosPlayer {
         path.add(node);
         PylosGameState startState = simulator.getState();
         PylosPlayerColor startColor = simulator.getColor();
-        String before = stateKey();
+        long before = stateKey();
         double reward;
         try {
             int depth = 0;
@@ -123,8 +122,8 @@ public class StudentPlayer extends PylosPlayer {
             reward = rollout(undo);
         } finally {
             undoAll(undo);
-            String after = stateKey();
-            if (!before.equals(after)) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
+            long after = stateKey();
+            if (before != after) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
             simulator = new PylosGameSimulator(startState, startColor, board);
         }
         tree.backpropagate(path, reward);
@@ -148,26 +147,31 @@ public class StudentPlayer extends PylosPlayer {
     }
 
 
+    // Fast tactical rollout: inspect a move directly without applying and undoing
+    // every candidate. This removes the biggest allocation/simulation hotspot.
     private MCTSTree.Action chooseRolloutAction(List<MCTSTree.Action> available) {
         PylosPlayerColor mover = simulator.getColor();
-        List<MCTSTree.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();
-        MCTSTree.Action winning = null;
+        MCTSTree.Action chosen = available.get(searchRandom.nextInt(available.size()));
+        int squareCount = 0;
+
         for (MCTSTree.Action action : available) {
-            UndoRecord record = apply(action);
-            PylosGameState state = simulator.getState();
-            PylosPlayerColor winner = simulator.getWinner();
-            if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
-            if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
-            if (state == PylosGameState.REMOVE_FIRST) squareMoves.add(action);
-            undo(record);
-            simulator = new PylosGameSimulator(record.state, record.color, board);
-            if (winning != null) break;
+            if (action.type != MCTSTree.ActionType.PLACEMENT &&
+                action.type != MCTSTree.ActionType.MOVE) continue;
+
+            // On a move, removing the sphere may affect square counts.
+            // Only regard placements as immediately certain square completions.
+            if (action.type == MCTSTree.ActionType.MOVE) continue;
+            for (PylosSquare square : action.location.getSquares()) {
+                if (square.getInSquare() == 3 &&
+                    square.getInSquare(mover) == 3) {
+                    if (searchRandom.nextInt(++squareCount) == 0) chosen = action;
+                    break;
+                }
+            }
         }
-        if (winning != null) return winning;
-        if (!squareMoves.isEmpty() && searchRandom.nextDouble() < 0.75)
-            return squareMoves.get(searchRandom.nextInt(squareMoves.size()));
-        List<MCTSTree.Action> choices = safe.isEmpty() ? available : safe;
-        return choices.get(searchRandom.nextInt(choices.size()));
+
+        if (squareCount > 0 && searchRandom.nextDouble() < 0.75) return chosen;
+        return available.get(searchRandom.nextInt(available.size()));
     }
 
     private List<MCTSTree.Action> legalActions() {
@@ -238,7 +242,7 @@ public class StudentPlayer extends PylosPlayer {
         return s == PylosGameState.COMPLETED || s == PylosGameState.DRAW || s == PylosGameState.ABORTED;
     }
 
-    private String stateKey() { return canonicalPosition().getKey(); }
+    private long stateKey() { return canonicalPosition().getKey(); }
 
     private static final class UndoRecord {
         private final MCTSTree.Action action;
