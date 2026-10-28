@@ -187,10 +187,17 @@ public class StudentPlayer extends PylosPlayer {
     }
 
 
+    // Rollout priorities: these are weights, NOT the final MCTS reward.
+    private static final int SCORE_BASE = 1;
+    private static final int SCORE_MOVE_EXISTING = 8;
+    private static final int SCORE_COMPLETE_SQUARE = 35;
+    private static final int SCORE_TWO_IN_SQUARE = 4;
+    private static final int SCORE_ONE_IN_SQUARE = 1;
+    private static final int SCORE_BLOCK_ENEMY = 5;
+
     /**
-     * Sample one legal rollout action without allocating a List<Action>.
-     * Uses reservoir sampling so each legal move has the same probability.
-     * Retains the 75% preference for completing a square with a reserve ball.
+     * Pick a legal action proportionally to its tactical score.
+     * Weighted reservoir sampling avoids constructing an action list.
      */
     private MCTSTree.Action randomRolloutAction() {
         PylosGameState state = simulator.getState();
@@ -205,11 +212,10 @@ public class StudentPlayer extends PylosPlayer {
                     if (searchRandom.nextInt(++count) == 0) selected = sphere;
                 }
             }
-            // PASS is also a legal choice during the second removal.
             if (state == PylosGameState.REMOVE_SECOND &&
-                    searchRandom.nextInt(count + 1) == 0) {
+                    searchRandom.nextInt(count + 1) == 0)
                 return MCTSTree.Action.pass();
-            }
+
             if (selected == null) throw new IllegalStateException("No removable sphere");
             return state == PylosGameState.REMOVE_FIRST
                     ? MCTSTree.Action.removeFirst(selected)
@@ -222,54 +228,82 @@ public class StudentPlayer extends PylosPlayer {
         PylosSphere selectedSphere = null;
         PylosLocation selectedLocation = null;
         boolean selectedReserve = false;
-        int count = 0;
+        int totalWeight = 0;
 
-        // Include all legal upward moves in the uniform sample.
+        // First consider moving balls that are already on the board.
         for (PylosSphere sphere : board.getSpheres(color)) {
             if (sphere.isReserve() || !sphere.canMove()) continue;
             for (PylosLocation location : board.getLocations()) {
-                if (sphere.canMoveTo(location)) {
-                    if (searchRandom.nextInt(++count) == 0) {
-                        selectedSphere = sphere;
-                        selectedLocation = location;
-                        selectedReserve = false;
-                    }
+                if (!sphere.canMoveTo(location)) continue;
+
+                int weight = scoreRolloutMove(sphere, location, color);
+                totalWeight += weight;
+                if (searchRandom.nextInt(totalWeight) < weight) {
+                    selectedSphere = sphere;
+                    selectedLocation = location;
+                    selectedReserve = false;
                 }
             }
         }
 
+        // Then consider placing a new ball from the reserve.
         PylosSphere reserve = board.getReserve(color);
-        PylosLocation squareLocation = null;
-        int squares = 0;
         if (reserve != null) {
             for (PylosLocation location : board.getLocations()) {
                 if (!location.isUsable()) continue;
-                if (searchRandom.nextInt(++count) == 0) {
+
+                int weight = scoreRolloutMove(reserve, location, color);
+                totalWeight += weight;
+                if (searchRandom.nextInt(totalWeight) < weight) {
                     selectedSphere = reserve;
                     selectedLocation = location;
                     selectedReserve = true;
                 }
+            }
+        }
 
-                // Check only placement squares; upward moves may change their source.
-                for (PylosSquare square : location.getSquares()) {
-                    if (square.getInSquare() == 3 &&
-                            square.getInSquare(color) == 3) {
-                        if (searchRandom.nextInt(++squares) == 0)
-                            squareLocation = location;
+        if (selectedSphere == null)
+            throw new IllegalStateException("No legal rollout move");
+
+        return selectedReserve
+                ? MCTSTree.Action.placement(selectedSphere, selectedLocation)
+                : MCTSTree.Action.move(selectedSphere, selectedLocation);
+    }
+
+    private int scoreRolloutMove(PylosSphere sphere,
+                                 PylosLocation destination,
+                                 PylosPlayerColor color) {
+        int score = SCORE_BASE;
+        boolean fromReserve = sphere.isReserve();
+        if (!fromReserve) score += SCORE_MOVE_EXISTING;
+
+        PylosLocation source = fromReserve ? null : sphere.getLocation();
+        PylosPlayerColor enemy = color.other();
+
+        for (PylosSquare square : destination.getSquares()) {
+            int mine = square.getInSquare(color);
+            int theirs = square.getInSquare(enemy);
+
+            // If an existing sphere leaves this same square, count that removal.
+            if (source != null) {
+                for (PylosLocation squareLocation : square.getLocations()) {
+                    if (squareLocation == source) {
+                        mine--;
                         break;
                     }
                 }
             }
+
+            if (theirs == 0) {
+                if (mine == 3) score += SCORE_COMPLETE_SQUARE;
+                else if (mine == 2) score += SCORE_TWO_IN_SQUARE;
+                else if (mine == 1) score += SCORE_ONE_IN_SQUARE;
+            } else if (theirs == 3 && mine == 0) {
+                score += SCORE_BLOCK_ENEMY;
+            }
         }
 
-        if (squareLocation != null && searchRandom.nextDouble() < 0.75)
-            return MCTSTree.Action.placement(reserve, squareLocation);
-
-        if (selectedSphere == null)
-            throw new IllegalStateException("No legal rollout move");
-        return selectedReserve
-                ? MCTSTree.Action.placement(selectedSphere, selectedLocation)
-                : MCTSTree.Action.move(selectedSphere, selectedLocation);
+        return score;
     }
 
     private List<MCTSTree.Action> legalActions() {
