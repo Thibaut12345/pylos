@@ -135,11 +135,17 @@ public class StudentPlayer extends PylosPlayer {
                 List<MCTSTree.Action> actualLegal = legalActions();
                 if (actualLegal.isEmpty()) throw new IllegalStateException("No legal actions in " + simulator.getState());
                 PylosSymmetry.Position position = canonicalPosition();
-                List<MCTSTree.Action> canonicalLegal = canonicalActions(actualLegal, position);
+                // The canonical legal list is only required the FIRST time we expand a node.
+                List<MCTSTree.Action> canonicalLegal = node.needsActions()
+                        ? canonicalActions(actualLegal, position) : null;
                 MCTSTree.Node child = tree.selectOrExpand(node, canonicalLegal);
                 MCTSTree.Action actualAction = PylosSymmetry.toActualAction(child.getAction(), actualLegal, position);
                 undo.add(apply(actualAction));
-                tree.observeState(child, stateKey(), simulator.getColor());
+                // Previously visited nodes already have their observed state.
+                // Rebuilding a canonical board key here would be expensive.
+                if (!child.isObserved()) {
+                    tree.observeState(child, stateKey(), simulator.getColor());
+                }
                 node = child;
                 path.add(node);
                 if (node.getVisits() == 0 || ++depth >= MAX_ROLLOUT_ACTIONS) break;
