@@ -11,9 +11,11 @@ import java.util.Random;
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentPlayer extends PylosPlayer {
     private static final int MAX_SIMULATIONS = 10_000;
-    private static final long MOVE_TIME_NS = 8_000_000L; // 8 ms per decision
+    private static final long MOVE_TIME_NS = 20_000_000L; // 20 ms for main moves
+    private static final long REMOVE_TIME_NS = 5_000_000L; // 5 ms for removal decisions
+    private static final long GAME_TIME_BUDGET_NS = 650_000_000L; // total own thinking time
     private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
-    private static final int MAX_ROLLOUT_ACTIONS = 160;
+    private static final int MAX_ROLLOUT_ACTIONS = 256;
     private final Random searchRandom = new Random();
 
     private PylosGameSimulator simulator;
@@ -22,6 +24,9 @@ public class StudentPlayer extends PylosPlayer {
     private MCTSTree darkTree;
     private MCTSTree tree;
     private MCTSTree.Action chosenTreeAction;
+    private PylosBoard budgetBoard;
+    private long remainingGameNanos = GAME_TIME_BUDGET_NS;
+    private int decisionsMade;
 
     @Override public void doMove(PylosGameIF game, PylosBoard board) {
         init(game.getState(), board);
@@ -58,6 +63,11 @@ public class StudentPlayer extends PylosPlayer {
     }
 
     private void init(PylosGameState state, PylosBoard board) {
+        if (budgetBoard != board) {
+            budgetBoard = board;
+            remainingGameNanos = GAME_TIME_BUDGET_NS;
+            decisionsMade = 0;
+        }
         this.board = board;
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
         ensureTreesInitialized();
@@ -89,14 +99,24 @@ public class StudentPlayer extends PylosPlayer {
 
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
-        long deadline = System.nanoTime() + MOVE_TIME_NS;
+        long start = System.nanoTime();
+        long perDecision = simulator.getState() == PylosGameState.MOVE
+                ? MOVE_TIME_NS : REMOVE_TIME_NS;
+        // Reserve enough of the game budget for later decisions.
+        int expectedLeft = Math.max(4, 28 - decisionsMade);
+        long allowed = Math.min(perDecision, remainingGameNanos / expectedLeft);
+        long deadline = start + Math.max(0L, allowed);
+        decisionsMade++;
+
         int iterations = 0;
-        // The 10,000 simulations are a ceiling, not a fixed workload.
-        // Each iteration restores the board before we inspect the clock again.
-        while (iterations < MAX_SIMULATIONS && System.nanoTime() < deadline) {
+        do {
+            // Always run one iteration to obtain a usable root action.
             runOneIteration(root);
             iterations++;
-        }
+        } while (iterations < MAX_SIMULATIONS && System.nanoTime() < deadline);
+
+        remainingGameNanos = Math.max(0L,
+                remainingGameNanos - (System.nanoTime() - start));
         chosenTreeAction = tree.bestRootAction();
         if (chosenTreeAction == null) return null;
         PylosSymmetry.Position position = canonicalPosition();
