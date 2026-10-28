@@ -67,6 +67,9 @@ public class StudentPlayer extends PylosPlayer {
             budgetBoard = board;
             remainingGameNanos = GAME_TIME_BUDGET_NS;
             decisionsMade = 0;
+            // Never reuse search statistics from a previous game.
+            lightTree = null;
+            darkTree = null;
         }
         this.board = board;
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
@@ -126,6 +129,8 @@ public class StudentPlayer extends PylosPlayer {
     private void runOneIteration(MCTSTree.Node root) {
         List<MCTSTree.Node> path = new ArrayList<>();
         List<UndoRecord> undo = new ArrayList<>();
+        PylosGameState startingState = simulator.getState();
+        PylosPlayerColor startingColor = simulator.getColor();
         MCTSTree.Node node = root;
         path.add(node);
         double reward;
@@ -153,6 +158,9 @@ public class StudentPlayer extends PylosPlayer {
             reward = rollout(undo);
         } finally {
             undoAll(undo);
+            // Simulator.reset() does not clear its winner field after undo.
+            // Rebuild the lightweight simulator to avoid stale terminal metadata.
+            simulator = new PylosGameSimulator(startingState, startingColor, board);
         }
         tree.backpropagate(path, reward);
     }
