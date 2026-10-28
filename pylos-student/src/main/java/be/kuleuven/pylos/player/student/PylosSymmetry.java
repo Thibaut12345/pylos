@@ -6,13 +6,7 @@ import be.kuleuven.pylos.game.PylosLocation;
 import be.kuleuven.pylos.game.PylosPlayerColor;
 import be.kuleuven.pylos.game.PylosSphere;
 
-/**
- * D4 symmetry helpers for the 4x4x4 Pylos pyramid.
- *
- * The eight location sequences deliberately follow the ordering used by
- * PylosBoard's private symmetry table. This class does not modify the engine
- * and treats spheres of the same colour as interchangeable for state keys.
- */
+
 public final class PylosSymmetry {
     private static final int LOCATION_COUNT = 30;
     private static final int SYMMETRY_COUNT = 8;
@@ -20,7 +14,6 @@ public final class PylosSymmetry {
 
     private PylosSymmetry() { }
 
-    /** Canonical state and the symmetry that maps its current board to that key. */
     public static final class Position {
         private final String key;
         private final int symmetry;
@@ -32,29 +25,36 @@ public final class PylosSymmetry {
 
         public String getKey() { return key; }
 
-        /** Returns the canonical sequence index for a location in this board orientation. */
         public int indexOf(PylosLocation location) {
-            if (location == null) return -1;
-            for (int i = 0; i < LOCATION_COUNT; i++) {
-                int[] c = COORDINATES[symmetry][i];
-                if (c[0] == location.X && c[1] == location.Y && c[2] == location.Z) return i;
+            if (location == null) {
+                return -1;
             }
-            throw new IllegalArgumentException("Location is not part of the standard Pylos board: " + location);
+
+            return COORDINATE_INDEX[symmetry]
+                    [location.X][location.Y][location.Z];
         }
 
-        /** Resolves a canonical sequence index to a location on the supplied board. */
-        public PylosLocation locationAt(PylosBoard board, int canonicalIndex) {
-            if (board == null) throw new IllegalArgumentException("Board is required");
-            if (canonicalIndex < 0 || canonicalIndex >= LOCATION_COUNT)
-                throw new IllegalArgumentException("Canonical location index out of range: " + canonicalIndex);
-            int[] c = COORDINATES[symmetry][canonicalIndex];
-            return board.getBoardLocation(c[0], c[1], c[2]);
+        private static final int[][][][] COORDINATE_INDEX = createCoordinateIndex();
+
+        private static int[][][][] createCoordinateIndex() {
+            int[][][][] index = new int[SYMMETRY_COUNT][4][4][4];
+
+            for (int symmetry = 0; symmetry < SYMMETRY_COUNT; symmetry++) {
+                for (int i = 0; i < LOCATION_COUNT; i++) {
+                    int x = COORDINATES[symmetry][i][0];
+                    int y = COORDINATES[symmetry][i][1];
+                    int z = COORDINATES[symmetry][i][2];
+
+                    index[symmetry][x][y][z] = i;
+                }
+            }
+
+            return index;
         }
     }
 
     public static Position canonicalize(PylosBoard board, PylosGameState state, PylosPlayerColor playerToMove) {
-        if (board == null || state == null || playerToMove == null)
-            throw new IllegalArgumentException("Board, state and player-to-move are required");
+        if (board == null || state == null || playerToMove == null) throw new IllegalArgumentException("Board, state and player-to-move are required");
 
         int bestSymmetry = 0;
         String bestOccupancy = occupancy(board, 0);
@@ -92,7 +92,6 @@ public final class PylosSymmetry {
         return MCTSTree.Action.canonical(action.type, from, to);
     }
 
-    /** Converts a canonical tree action to the corresponding legal action on this board. */
     public static MCTSTree.Action toActualAction(
             MCTSTree.Action canonicalAction,
             Iterable<MCTSTree.Action> actualLegalActions,
@@ -119,49 +118,142 @@ public final class PylosSymmetry {
     }
 
     private static int[][][] createCoordinateSequences() {
-        int[][][] sequences = new int[SYMMETRY_COUNT][LOCATION_COUNT][3];
-        int index;
+        return new int[][][] {
+                // Symmetry 0
+                {
+                        {0,0,0}, {0,1,0}, {0,2,0}, {0,3,0},
+                        {1,0,0}, {1,1,0}, {1,2,0}, {1,3,0},
+                        {2,0,0}, {2,1,0}, {2,2,0}, {2,3,0},
+                        {3,0,0}, {3,1,0}, {3,2,0}, {3,3,0},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int x = 0; x < 4 - z; x++)
-                for (int y = 0; y < 4 - z; y++) sequences[0][index++] = new int[]{x, y, z};
+                        {0,0,1}, {0,1,1}, {0,2,1},
+                        {1,0,1}, {1,1,1}, {1,2,1},
+                        {2,0,1}, {2,1,1}, {2,2,1},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int y = 0; y < 4 - z; y++)
-                for (int x = 0; x < 4 - z; x++) sequences[1][index++] = new int[]{x, y, z};
+                        {0,0,2}, {0,1,2},
+                        {1,0,2}, {1,1,2},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int x = 3 - z; x >= 0; x--)
-                for (int y = 0; y < 4 - z; y++) sequences[2][index++] = new int[]{x, y, z};
+                        {0,0,3}
+                },
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int y = 0; y < 4 - z; y++)
-                for (int x = 3 - z; x >= 0; x--) sequences[3][index++] = new int[]{x, y, z};
+                // Symmetry 1
+                {
+                        {0,0,0}, {1,0,0}, {2,0,0}, {3,0,0},
+                        {0,1,0}, {1,1,0}, {2,1,0}, {3,1,0},
+                        {0,2,0}, {1,2,0}, {2,2,0}, {3,2,0},
+                        {0,3,0}, {1,3,0}, {2,3,0}, {3,3,0},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int x = 3 - z; x >= 0; x--)
-                for (int y = 3 - z; y >= 0; y--) sequences[4][index++] = new int[]{x, y, z};
+                        {0,0,1}, {1,0,1}, {2,0,1},
+                        {0,1,1}, {1,1,1}, {2,1,1},
+                        {0,2,1}, {1,2,1}, {2,2,1},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int y = 3 - z; y >= 0; y--)
-                for (int x = 3 - z; x >= 0; x--) sequences[5][index++] = new int[]{x, y, z};
+                        {0,0,2}, {1,0,2},
+                        {0,1,2}, {1,1,2},
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int x = 0; x < 4 - z; x++)
-                for (int y = 3 - z; y >= 0; y--) sequences[6][index++] = new int[]{x, y, z};
+                        {0,0,3}
+                },
 
-        index = 0;
-        for (int z = 0; z < 4; z++)
-            for (int y = 3 - z; y >= 0; y--)
-                for (int x = 0; x < 4 - z; x++) sequences[7][index++] = new int[]{x, y, z};
+                // Symmetry 2
+                {
+                        {3,0,0}, {3,1,0}, {3,2,0}, {3,3,0},
+                        {2,0,0}, {2,1,0}, {2,2,0}, {2,3,0},
+                        {1,0,0}, {1,1,0}, {1,2,0}, {1,3,0},
+                        {0,0,0}, {0,1,0}, {0,2,0}, {0,3,0},
 
-        return sequences;
+                        {2,0,1}, {2,1,1}, {2,2,1},
+                        {1,0,1}, {1,1,1}, {1,2,1},
+                        {0,0,1}, {0,1,1}, {0,2,1},
+
+                        {1,0,2}, {1,1,2},
+                        {0,0,2}, {0,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 3
+                {
+                        {3,0,0}, {2,0,0}, {1,0,0}, {0,0,0},
+                        {3,1,0}, {2,1,0}, {1,1,0}, {0,1,0},
+                        {3,2,0}, {2,2,0}, {1,2,0}, {0,2,0},
+                        {3,3,0}, {2,3,0}, {1,3,0}, {0,3,0},
+
+                        {2,0,1}, {1,0,1}, {0,0,1},
+                        {2,1,1}, {1,1,1}, {0,1,1},
+                        {2,2,1}, {1,2,1}, {0,2,1},
+
+                        {1,0,2}, {0,0,2},
+                        {1,1,2}, {0,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 4
+                {
+                        {3,3,0}, {3,2,0}, {3,1,0}, {3,0,0},
+                        {2,3,0}, {2,2,0}, {2,1,0}, {2,0,0},
+                        {1,3,0}, {1,2,0}, {1,1,0}, {1,0,0},
+                        {0,3,0}, {0,2,0}, {0,1,0}, {0,0,0},
+
+                        {2,2,1}, {2,1,1}, {2,0,1},
+                        {1,2,1}, {1,1,1}, {1,0,1},
+                        {0,2,1}, {0,1,1}, {0,0,1},
+
+                        {1,1,2}, {1,0,2},
+                        {0,1,2}, {0,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 5
+                {
+                        {3,3,0}, {2,3,0}, {1,3,0}, {0,3,0},
+                        {3,2,0}, {2,2,0}, {1,2,0}, {0,2,0},
+                        {3,1,0}, {2,1,0}, {1,1,0}, {0,1,0},
+                        {3,0,0}, {2,0,0}, {1,0,0}, {0,0,0},
+
+                        {2,2,1}, {1,2,1}, {0,2,1},
+                        {2,1,1}, {1,1,1}, {0,1,1},
+                        {2,0,1}, {1,0,1}, {0,0,1},
+
+                        {1,1,2}, {0,1,2},
+                        {1,0,2}, {0,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 6
+                {
+                        {0,3,0}, {0,2,0}, {0,1,0}, {0,0,0},
+                        {1,3,0}, {1,2,0}, {1,1,0}, {1,0,0},
+                        {2,3,0}, {2,2,0}, {2,1,0}, {2,0,0},
+                        {3,3,0}, {3,2,0}, {3,1,0}, {3,0,0},
+
+                        {0,2,1}, {0,1,1}, {0,0,1},
+                        {1,2,1}, {1,1,1}, {1,0,1},
+                        {2,2,1}, {2,1,1}, {2,0,1},
+
+                        {0,1,2}, {0,0,2},
+                        {1,1,2}, {1,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 7
+                {
+                        {0,3,0}, {1,3,0}, {2,3,0}, {3,3,0},
+                        {0,2,0}, {1,2,0}, {2,2,0}, {3,2,0},
+                        {0,1,0}, {1,1,0}, {2,1,0}, {3,1,0},
+                        {0,0,0}, {1,0,0}, {2,0,0}, {3,0,0},
+
+                        {0,2,1}, {1,2,1}, {2,2,1},
+                        {0,1,1}, {1,1,1}, {2,1,1},
+                        {0,0,1}, {1,0,1}, {2,0,1},
+
+                        {0,1,2}, {1,1,2},
+                        {0,0,2}, {1,0,2},
+
+                        {0,0,3}
+                }
+        };
     }
 }

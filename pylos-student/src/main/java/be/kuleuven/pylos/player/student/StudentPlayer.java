@@ -64,11 +64,8 @@ public class StudentPlayer extends PylosPlayer {
         tree.ensureRoot(simulator.getColor(), stateKey());
     }
 
-    @Override public void init(PylosPlayerColor playerColor, PylosPlayer other,
-                               PylosPlayerObserver observer, Random random) {
+    @Override public void init(PylosPlayerColor playerColor, PylosPlayer other, PylosPlayerObserver observer, Random random) {
         super.init(playerColor, other, observer, random);
-        // Do not clear either tree here: this method is called again when the
-        // same StudentPlayer instance is assigned the opposite colour.
         ensureTreesInitialized();
         tree = treeFor(PLAYER_COLOR);
     }
@@ -76,26 +73,20 @@ public class StudentPlayer extends PylosPlayer {
     private void ensureTreesInitialized() {
         if (lightTree != null && darkTree != null) return;
         String emptyBoardKey = initialStateKey();
-        if (lightTree == null)
-            lightTree = new MCTSTree(PylosPlayerColor.LIGHT, emptyBoardKey,
-                    PylosPlayerColor.LIGHT, searchRandom);
-        if (darkTree == null)
-            darkTree = new MCTSTree(PylosPlayerColor.DARK, emptyBoardKey,
-                    PylosPlayerColor.LIGHT, searchRandom);
+        if (lightTree == null) lightTree = new MCTSTree(PylosPlayerColor.LIGHT, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
+        if (darkTree == null) darkTree = new MCTSTree(PylosPlayerColor.DARK, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
     }
 
     private MCTSTree treeFor(PylosPlayerColor color) {
         return color == PylosPlayerColor.LIGHT ? lightTree : darkTree;
     }
 
-    /** The standard game begins in MOVE with LIGHT to move and an empty 30-location board. */
     private static String initialStateKey() {
         StringBuilder empty = new StringBuilder(30);
         for (int i = 0; i < 30; i++) empty.append('0');
         return PylosGameState.MOVE.name() + "|" + PylosPlayerColor.LIGHT.name() + "|" + empty;
     }
 
-    /** Returns a live engine action and retains its canonical descriptor for tree advancement. */
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
         for (int i = 0; i < NUMBER_OF_SIMULATIONS; i++) runOneIteration(root);
@@ -156,7 +147,7 @@ public class StudentPlayer extends PylosPlayer {
         return reward;
     }
 
-    /** Immediate wins are mandatory; otherwise prefer square completion 75% of the time. */
+
     private MCTSTree.Action chooseRolloutAction(List<MCTSTree.Action> available) {
         PylosPlayerColor mover = simulator.getColor();
         List<MCTSTree.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();

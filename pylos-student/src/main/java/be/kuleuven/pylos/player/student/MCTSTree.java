@@ -10,19 +10,11 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.Random;
 
-/** UCT tree; all rewards are measured from the fixed root player's perspective. */
 public final class MCTSTree {
     public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(2.0);
-
-    public PylosPlayerColor getRewardPerspective() { return rewardPerspective; }
-
     public enum ActionType { PLACEMENT, MOVE, REMOVE_FIRST, REMOVE_SECOND, PASS }
 
-    /**
-     * Actions can hold live engine references (rollouts/game execution) or canonical
-     * location indices (tree storage). Canonical actions never retain sphere IDs or
-     * orientation-specific PylosLocation references.
-     */
+
     public static final class Action {
         public final ActionType type;
         public final PylosSphere sphere;
@@ -31,8 +23,7 @@ public final class MCTSTree {
         private final int fromIndex;
         private final int toIndex;
 
-        private Action(ActionType type, PylosSphere sphere, PylosLocation location,
-                       boolean canonical, int fromIndex, int toIndex) {
+        private Action(ActionType type, PylosSphere sphere, PylosLocation location, boolean canonical, int fromIndex, int toIndex) {
             this.type = type;
             this.sphere = sphere;
             this.location = location;
@@ -55,14 +46,6 @@ public final class MCTSTree {
             if (other == null || type != other.type || canonical != other.canonical) return false;
             if (canonical) return fromIndex == other.fromIndex && toIndex == other.toIndex;
             return sphere == other.sphere && location == other.location;
-        }
-        @Override public String toString() {
-            if (canonical) return type + "[from=" + fromIndex + ", to=" + toIndex + "]";
-            switch (type) {
-                case PLACEMENT: case MOVE: return type + "(" + sphere + " -> " + location + ")";
-                case REMOVE_FIRST: case REMOVE_SECOND: return type + "(" + sphere + ")";
-                default: return "PASS";
-            }
         }
     }
 
@@ -98,29 +81,16 @@ public final class MCTSTree {
     private final double explorationConstant;
     private final PylosPlayerColor rewardPerspective;
 
-    /* persistentRoot is never advanced. root is the position currently being searched. */
     private final Node persistentRoot;
     private Node root;
     private final Map<String, Node> stateIndex = new HashMap<>();
 
-    public MCTSTree(PylosPlayerColor player, String key, Random random) {
-        this(player, key, player, random, DEFAULT_EXPLORATION_CONSTANT);
-    }
-    public MCTSTree(PylosPlayerColor player, String key, Random random, double explorationConstant) {
-        this(player, key, player, random, explorationConstant);
-    }
 
-    /**
-     * Creates a colour-specific tree with an independent reward perspective and
-     * an explicitly specified player-to-move at the initial state.
-     */
-    public MCTSTree(PylosPlayerColor rewardPerspective, String key,
-                    PylosPlayerColor playerToMove, Random random) {
+    public MCTSTree(PylosPlayerColor rewardPerspective, String key, PylosPlayerColor playerToMove, Random random) {
         this(rewardPerspective, key, playerToMove, random, DEFAULT_EXPLORATION_CONSTANT);
     }
 
-    public MCTSTree(PylosPlayerColor rewardPerspective, String key,
-                    PylosPlayerColor playerToMove, Random random, double explorationConstant) {
+    public MCTSTree(PylosPlayerColor rewardPerspective, String key, PylosPlayerColor playerToMove, Random random, double explorationConstant) {
         if (rewardPerspective == null || playerToMove == null || key == null || random == null)
             throw new IllegalArgumentException("Reward perspective, root player, key and RNG are required");
         if (explorationConstant < 0.0 || Double.isNaN(explorationConstant))
@@ -134,13 +104,7 @@ public final class MCTSTree {
     }
 
     public Node getRoot() { return root; }
-    public Node getPersistentRoot() { return persistentRoot; }
 
-    /**
-     * Repositions the active search root without deleting or copying any nodes.
-     * The state index also permits reuse of positions first encountered from a
-     * detached root (notably DARK's first turn, which is called after LIGHT moves).
-     */
     public void ensureRoot(PylosPlayerColor player, String key) {
         if (player == null || key == null) throw new IllegalArgumentException("Root player and key are required");
         if (player == root.playerToMove && key.equals(root.stateKey)) return;
@@ -152,7 +116,6 @@ public final class MCTSTree {
         root = match;
     }
 
-    /** Record the actual state reached by a canonical action and index it for later games. */
     public void observeState(Node node, String key, PylosPlayerColor player) {
         if (node == null) throw new IllegalArgumentException("Node is required");
         node.setObservedState(key, player);
@@ -168,7 +131,7 @@ public final class MCTSTree {
         return player.name() + "|" + key;
     }
 
-    /** Legal actions supplied here must be canonical descriptors, not engine references. */
+
     public Node selectOrExpand(Node node, List<Action> legal) {
         if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
         if (node.unexpandedActions == null) {
@@ -198,7 +161,6 @@ public final class MCTSTree {
         for (Node node : path) { node.visits++; node.totalReward += reward; }
     }
 
-    /** Most-visited root action wins; estimated value breaks visit-count ties. */
     public Action bestRootAction() {
         Node best = null; double bestMean = Double.NEGATIVE_INFINITY;
         for (Node child : root.children) {
@@ -211,8 +173,7 @@ public final class MCTSTree {
     }
 
     public void advanceRoot(Action canonicalAction) {
-        if (canonicalAction == null || !canonicalAction.canonical)
-            throw new IllegalArgumentException("A canonical tree action is required");
+        if (canonicalAction == null || !canonicalAction.canonical) throw new IllegalArgumentException("A canonical tree action is required");
         Node selected = null;
         for (Node child : root.children) if (child.action != null && child.action.sameAs(canonicalAction)) { selected = child; break; }
         if (selected == null) throw new IllegalStateException("Selected canonical action is not a child of the current root");
