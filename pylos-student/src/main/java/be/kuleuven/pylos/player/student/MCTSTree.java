@@ -56,24 +56,25 @@ public final class MCTSTree {
         private List<Action> unexpandedActions;
         private int visits;
         private double totalReward;
-        private String stateKey;
+        private long stateKey;
+        private boolean observed;
         private PylosPlayerColor playerToMove;
-        private Node(Node parent, Action action, String key, PylosPlayerColor player) {
-            this.parent = parent; this.action = action; stateKey = key; playerToMove = player;
+        private Node(Node parent, Action action, long key, PylosPlayerColor player) {
+            this.parent = parent; this.action = action; stateKey = key; playerToMove = player; observed = player != null;
         }
         public Action getAction() { return action; }
         public int getVisits() { return visits; }
         public double getMeanReward() { return visits == 0 ? 0.0 : totalReward / visits; }
         public PylosPlayerColor getColor() { return playerToMove; }
-        public String getStateKey() { return stateKey; }
-        public void setObservedState(String key, PylosPlayerColor color) {
-            if (key == null || color == null) throw new IllegalArgumentException("Observed state and player are required");
-            if (stateKey != null) {
-                if (!stateKey.equals(key) || playerToMove != color)
+        public long getStateKey() { return stateKey; }
+        public void setObservedState(long key, PylosPlayerColor color) {
+            if (color == null) throw new IllegalArgumentException("Observed state and player are required");
+            if (observed) {
+                if (stateKey != key || playerToMove != color)
                     throw new IllegalStateException("Node state mismatch: same canonical action produced a different state");
                 return;
             }
-            stateKey = key; playerToMove = color;
+            stateKey = key; playerToMove = color; observed = true;
         }
     }
 
@@ -83,15 +84,15 @@ public final class MCTSTree {
 
     private final Node persistentRoot;
     private Node root;
-    private final Map<String, Node> stateIndex = new HashMap<>();
+    private final Map<Long, Node> stateIndex = new HashMap<>();
 
 
-    public MCTSTree(PylosPlayerColor rewardPerspective, String key, PylosPlayerColor playerToMove, Random random) {
+    public MCTSTree(PylosPlayerColor rewardPerspective, long key, PylosPlayerColor playerToMove, Random random) {
         this(rewardPerspective, key, playerToMove, random, DEFAULT_EXPLORATION_CONSTANT);
     }
 
-    public MCTSTree(PylosPlayerColor rewardPerspective, String key, PylosPlayerColor playerToMove, Random random, double explorationConstant) {
-        if (rewardPerspective == null || playerToMove == null || key == null || random == null)
+    public MCTSTree(PylosPlayerColor rewardPerspective, long key, PylosPlayerColor playerToMove, Random random, double explorationConstant) {
+        if (rewardPerspective == null || playerToMove == null || random == null)
             throw new IllegalArgumentException("Reward perspective, root player, key and RNG are required");
         if (explorationConstant < 0.0 || Double.isNaN(explorationConstant))
             throw new IllegalArgumentException("Invalid exploration constant");
@@ -105,10 +106,10 @@ public final class MCTSTree {
 
     public Node getRoot() { return root; }
 
-    public void ensureRoot(PylosPlayerColor player, String key) {
-        if (player == null || key == null) throw new IllegalArgumentException("Root player and key are required");
-        if (player == root.playerToMove && key.equals(root.stateKey)) return;
-        Node match = stateIndex.get(stateId(player, key));
+    public void ensureRoot(PylosPlayerColor player, long key) {
+        if (player == null) throw new IllegalArgumentException("Root player and key are required");
+        if (player == root.playerToMove && key == root.stateKey) return;
+        Node match = stateIndex.get(key);
         if (match == null) {
             match = new Node(null, null, key, player);
             indexState(match);
@@ -116,21 +117,16 @@ public final class MCTSTree {
         root = match;
     }
 
-    public void observeState(Node node, String key, PylosPlayerColor player) {
+    public void observeState(Node node, long key, PylosPlayerColor player) {
         if (node == null) throw new IllegalArgumentException("Node is required");
         node.setObservedState(key, player);
         indexState(node);
     }
 
     private void indexState(Node node) {
-        if (node.stateKey != null && node.playerToMove != null)
-            stateIndex.putIfAbsent(stateId(node.playerToMove, node.stateKey), node);
+        if (node.observed)
+            stateIndex.putIfAbsent(node.stateKey, node);
     }
-
-    private static String stateId(PylosPlayerColor player, String key) {
-        return player.name() + "|" + key;
-    }
-
 
     public Node selectOrExpand(Node node, List<Action> legal) {
         if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
@@ -139,7 +135,7 @@ public final class MCTSTree {
             Collections.shuffle(node.unexpandedActions, random);
         }
         if (!node.unexpandedActions.isEmpty()) {
-            Node child = new Node(node, node.unexpandedActions.remove(node.unexpandedActions.size() - 1), null, null);
+            Node child = new Node(node, node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
             node.children.add(child); return child;
         }
         Node best = null; double bestValue = Double.NEGATIVE_INFINITY;
@@ -177,7 +173,7 @@ public final class MCTSTree {
         Node selected = null;
         for (Node child : root.children) if (child.action != null && child.action.sameAs(canonicalAction)) { selected = child; break; }
         if (selected == null) throw new IllegalStateException("Selected canonical action is not a child of the current root");
-        if (selected.stateKey == null || selected.playerToMove == null) throw new IllegalStateException("Selected child has no observed state");
+        if (!selected.observed) throw new IllegalStateException("Selected child has no observed state");
         root = selected;
         indexState(selected);
     }
