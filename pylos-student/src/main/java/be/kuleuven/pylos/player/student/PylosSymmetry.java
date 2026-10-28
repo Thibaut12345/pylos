@@ -15,15 +15,15 @@ public final class PylosSymmetry {
     private PylosSymmetry() { }
 
     public static final class Position {
-        private final String key;
+        private final long key;
         private final int symmetry;
 
-        private Position(String key, int symmetry) {
+        private Position(long key, int symmetry) {
             this.key = key;
             this.symmetry = symmetry;
         }
 
-        public String getKey() { return key; }
+        public long getKey() { return key; }
 
         public int indexOf(PylosLocation location) {
             if (location == null) {
@@ -57,15 +57,18 @@ public final class PylosSymmetry {
         if (board == null || state == null || playerToMove == null) throw new IllegalArgumentException("Board, state and player-to-move are required");
 
         int bestSymmetry = 0;
-        String bestOccupancy = occupancy(board, 0);
+        long best = occupancy(board, 0);
         for (int symmetry = 1; symmetry < SYMMETRY_COUNT; symmetry++) {
-            String candidate = occupancy(board, symmetry);
-            if (candidate.compareTo(bestOccupancy) < 0) {
-                bestOccupancy = candidate;
+            long candidate = occupancy(board, symmetry);
+            if (Long.compareUnsigned(candidate, best) < 0) {
+                best = candidate;
                 bestSymmetry = symmetry;
             }
         }
-        return new Position(state.name() + "|" + playerToMove.name() + "|" + bestOccupancy, bestSymmetry);
+        // 30 cells x 2 bits = 60 bits; 3 bits for phase, 1 bit for player.
+        long key = best | ((long) state.ordinal() << 60);
+        if (playerToMove == PylosPlayerColor.DARK) key |= Long.MIN_VALUE;
+        return new Position(key, bestSymmetry);
     }
 
     public static MCTSTree.Action toCanonicalAction(MCTSTree.Action action, Position position) {
@@ -105,16 +108,16 @@ public final class PylosSymmetry {
         throw new IllegalStateException("Canonical action has no legal equivalent in the current orientation: " + canonicalAction);
     }
 
-    private static String occupancy(PylosBoard board, int symmetry) {
-        StringBuilder result = new StringBuilder(LOCATION_COUNT);
+    private static long occupancy(PylosBoard board, int symmetry) {
+        long bits = 0L;
         for (int i = 0; i < LOCATION_COUNT; i++) {
             int[] c = COORDINATES[symmetry][i];
             PylosSphere sphere = board.getBoardLocation(c[0], c[1], c[2]).getSphere();
-            if (sphere == null) result.append('0');
-            else if (sphere.PLAYER_COLOR == PylosPlayerColor.LIGHT) result.append('1');
-            else result.append('2');
+            int value = sphere == null ? 0
+                    : sphere.PLAYER_COLOR == PylosPlayerColor.LIGHT ? 1 : 2;
+            bits = (bits << 2) | value;
         }
-        return result.toString();
+        return bits;
     }
 
     private static int[][][] createCoordinateSequences() {
