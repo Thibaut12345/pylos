@@ -10,9 +10,10 @@ import java.util.Random;
 
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentPlayer extends PylosPlayer {
-    private static final int NUMBER_OF_SIMULATIONS = 10_000;
+    private static final int MAX_SIMULATIONS = 10_000;
+    private static final long MOVE_TIME_NS = 8_000_000L; // 8 ms per decision
     private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
-    private static final int MAX_ROLLOUT_ACTIONS = 1024;
+    private static final int MAX_ROLLOUT_ACTIONS = 160;
     private final Random searchRandom = new Random();
 
     private PylosGameSimulator simulator;
@@ -88,7 +89,14 @@ public class StudentPlayer extends PylosPlayer {
 
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
-        for (int i = 0; i < NUMBER_OF_SIMULATIONS; i++) runOneIteration(root);
+        long deadline = System.nanoTime() + MOVE_TIME_NS;
+        int iterations = 0;
+        // The 10,000 simulations are a ceiling, not a fixed workload.
+        // Each iteration restores the board before we inspect the clock again.
+        while (iterations < MAX_SIMULATIONS && System.nanoTime() < deadline) {
+            runOneIteration(root);
+            iterations++;
+        }
         chosenTreeAction = tree.bestRootAction();
         if (chosenTreeAction == null) return null;
         PylosSymmetry.Position position = canonicalPosition();
@@ -100,9 +108,6 @@ public class StudentPlayer extends PylosPlayer {
         List<UndoRecord> undo = new ArrayList<>();
         MCTSTree.Node node = root;
         path.add(node);
-        PylosGameState startState = simulator.getState();
-        PylosPlayerColor startColor = simulator.getColor();
-        long before = stateKey();
         double reward;
         try {
             int depth = 0;
@@ -122,9 +127,6 @@ public class StudentPlayer extends PylosPlayer {
             reward = rollout(undo);
         } finally {
             undoAll(undo);
-            long after = stateKey();
-            if (before != after) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
-            simulator = new PylosGameSimulator(startState, startColor, board);
         }
         tree.backpropagate(path, reward);
     }
@@ -141,7 +143,12 @@ public class StudentPlayer extends PylosPlayer {
         if (simulator.getState() == PylosGameState.COMPLETED)
             reward = simulator.getWinner() == PLAYER_COLOR ? WIN_SCORE : LOSS_SCORE;
         else if (simulator.getState() == PylosGameState.DRAW) reward = DRAW_SCORE;
-        else reward = DRAW_SCORE;
+        else {
+            // Non-terminal cut-off: approximate with remaining reserves.
+            int mine = board.getReservesSize(PLAYER_COLOR);
+            int theirs = board.getReservesSize(PLAYER_COLOR.other());
+            reward = (mine - theirs) / 15.0;
+        }
         for (int i = undo.size() - 1; i >= start; i--) undo(undo.remove(i));
         return reward;
     }
