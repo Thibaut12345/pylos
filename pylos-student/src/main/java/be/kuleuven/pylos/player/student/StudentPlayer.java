@@ -10,9 +10,13 @@ import java.util.Random;
 
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentPlayer extends PylosPlayer {
-    private static final int MAX_SIMULATIONS = 10_000;
-    private static final long MOVE_TIME_NS = 20_000_000L; // 20 ms for main moves
-    private static final long REMOVE_TIME_NS = 5_000_000L; // 5 ms for removal decisions
+    // Search limits scale with game progress (0 = start, 1 = end).
+    private static final int EARLY_SIMULATIONS = 1_500;
+    private static final int LATE_SIMULATIONS = 10_000;
+    private static final long EARLY_MOVE_NS = 12_000_000L;
+    private static final long LATE_MOVE_NS = 28_000_000L;
+    private static final long EARLY_REMOVE_NS = 3_000_000L;
+    private static final long LATE_REMOVE_NS = 7_000_000L;
     private static final long GAME_TIME_BUDGET_NS = 650_000_000L; // total own thinking time
     private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
     private static final int MAX_ROLLOUT_ACTIONS = 256;
@@ -100,32 +104,55 @@ public class StudentPlayer extends PylosPlayer {
         return 0L;
     }
 
+    // Game progress is estimated from how many reserve spheres have been spent.
+    // A max() with the decision count ensures progress does not move backwards
+    // when a completed square sends a sphere back into reserve.
+    private double gameProgress() {
+        int total = 2 * board.SPHERES_PER_PLAYER;
+        int inReserve = board.getReservesSize(PylosPlayerColor.LIGHT)
+                + board.getReservesSize(PylosPlayerColor.DARK);
+        double boardProgress = (double) (total - inReserve) / total;
+        double turnProgress = Math.min(1.0, decisionsMade / 50.0);
+        return Math.max(boardProgress, turnProgress);
+    }
+
     private MCTSTree.Action searchBestAction() {
         MCTSTree.Node root = tree.getRoot();
-        // One-ply tactical check at the root. If there is an immediate
-        // terminal victory, play it instead of spending time on rollouts.
         MCTSTree.Action directWin = findImmediateWin();
         if (directWin != null) {
-            chosenTreeAction = null; // Root will be synchronized next callback.
+            chosenTreeAction = null;
             return directWin;
         }
+
         long start = System.nanoTime();
+        double progress = gameProgress();
+
+        // Early game: fewer simulations / shorter turns.
+        // Late game: more simulations / longer turns.
+        int maxSimulations = EARLY_SIMULATIONS
+                + (int) ((LATE_SIMULATIONS - EARLY_SIMULATIONS) * progress);
+        long moveBudget = EARLY_MOVE_NS
+                + (long) ((LATE_MOVE_NS - EARLY_MOVE_NS) * progress);
+        long removeBudget = EARLY_REMOVE_NS
+                + (long) ((LATE_REMOVE_NS - EARLY_REMOVE_NS) * progress);
         long perDecision = simulator.getState() == PylosGameState.MOVE
-                ? MOVE_TIME_NS : REMOVE_TIME_NS;
-        // Reserve enough of the game budget for later decisions.
-        int expectedLeft = Math.max(4, 28 - decisionsMade);
-        long allowed = Math.min(perDecision, remainingGameNanos / expectedLeft);
-        long deadline = start + Math.max(0L, allowed);
+                ? moveBudget : removeBudget;
+
+        // Keep enough thinking time for the rest of the game.
+        // Late in the game there are fewer decisions left.
+        int estimatedLeft = Math.max(4,
+                (int) Math.round(28 * (1.0 - progress)));
+        long allowed = Math.min(perDecision, remainingGameNanos / estimatedLeft);
+        long deadline = start + Math.max(0, allowed);
         decisionsMade++;
 
         int iterations = 0;
         do {
-            // Always run one iteration to obtain a usable root action.
             runOneIteration(root);
             iterations++;
-        } while (iterations < MAX_SIMULATIONS && System.nanoTime() < deadline);
+        } while (iterations < maxSimulations && System.nanoTime() < deadline);
 
-        remainingGameNanos = Math.max(0L,
+        remainingGameNanos = Math.max(0,
                 remainingGameNanos - (System.nanoTime() - start));
         chosenTreeAction = tree.bestRootAction();
         if (chosenTreeAction == null) return null;
