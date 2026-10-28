@@ -67,6 +67,8 @@ public final class MCTSTree {
         public double getMeanReward() { return visits == 0 ? 0.0 : totalReward / visits; }
         public PylosPlayerColor getColor() { return playerToMove; }
         public long getStateKey() { return stateKey; }
+        public boolean isObserved() { return observed; }
+        public boolean needsActions() { return unexpandedActions == null; }
         public void setObservedState(long key, PylosPlayerColor color) {
             if (color == null) throw new IllegalArgumentException("Observed state and player are required");
             if (observed) {
@@ -129,8 +131,9 @@ public final class MCTSTree {
     }
 
     public Node selectOrExpand(Node node, List<Action> legal) {
-        if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
+        if (node == null) throw new IllegalArgumentException("Node is required");
         if (node.unexpandedActions == null) {
+            if (legal == null || legal.isEmpty()) throw new IllegalArgumentException("Legal actions are required for expansion");
             node.unexpandedActions = new ArrayList<>(legal);
             Collections.shuffle(node.unexpandedActions, random);
         }
@@ -139,11 +142,12 @@ public final class MCTSTree {
             node.children.add(child); return child;
         }
         Node best = null; double bestValue = Double.NEGATIVE_INFINITY;
+        double logVisits = Math.log(Math.max(1, node.visits));
         for (Node child : node.children) {
             if (child.visits == 0) return child;
             double exploitation = child.totalReward / child.visits;
             if (node.playerToMove != rewardPerspective) exploitation = -exploitation;
-            double exploration = explorationConstant * Math.sqrt(Math.log(Math.max(1, node.visits)) / child.visits);
+            double exploration = explorationConstant * Math.sqrt(logVisits / child.visits);
             double value = exploitation + exploration;
             if (value > bestValue) { bestValue = value; best = child; }
         }
