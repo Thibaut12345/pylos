@@ -21,8 +21,8 @@ public final class MCTSTree {
         public final PylosSphere sphere;
         public final PylosLocation location;
         private final boolean canonical;
-        private final int fromIndex;
-        private final int toIndex;
+        final int fromIndex;
+        final int toIndex;
 
         private Action(ActionType type, PylosSphere sphere, PylosLocation location, boolean canonical, int fromIndex, int toIndex) {
             this.type = type;
