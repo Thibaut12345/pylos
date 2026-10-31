@@ -34,6 +34,13 @@ public final class PylosSymmetry {
                     [location.X][location.Y][location.Z];
         }
 
+        private PylosLocation locationAt(PylosBoard board, int index) {
+            if (board == null || index < 0 || index >= LOCATION_COUNT)
+                throw new IllegalArgumentException("Board and valid canonical location index are required");
+            int[] coordinates = COORDINATES[symmetry][index];
+            return board.getBoardLocation(coordinates[0], coordinates[1], coordinates[2]);
+        }
+
         private static final int[][][][] COORDINATE_INDEX = createCoordinateIndex();
 
         private static int[][][][] createCoordinateIndex() {
@@ -96,15 +103,44 @@ public final class PylosSymmetry {
 
     public static MCTSTree.Action toActualAction(
             MCTSTree.Action canonicalAction,
-            Iterable<MCTSTree.Action> actualLegalActions,
+            PylosBoard board,
+            PylosPlayerColor playerColor,
             Position position
     ) {
-        if (canonicalAction == null || actualLegalActions == null || position == null)
-            throw new IllegalArgumentException("Canonical action, legal actions and position are required");
-        for (MCTSTree.Action actual : actualLegalActions) {
-            if (canonicalAction.sameAs(toCanonicalAction(actual, position))) return actual;
+        if (canonicalAction == null || board == null || playerColor == null || position == null)
+            throw new IllegalArgumentException("Canonical action, board, player color and position are required");
+
+        PylosLocation from = canonicalAction.fromIndex < 0
+                ? null : position.locationAt(board, canonicalAction.fromIndex);
+        PylosLocation to = canonicalAction.toIndex < 0
+                ? null : position.locationAt(board, canonicalAction.toIndex);
+
+        switch (canonicalAction.type) {
+            case PLACEMENT:
+                PylosSphere reserve = board.getReserve(playerColor);
+                if (reserve == null || to == null)
+                    throw new IllegalStateException("Canonical placement cannot be mapped to the current board");
+                return MCTSTree.Action.placement(reserve, to);
+            case MOVE:
+                PylosSphere movingSphere = from == null ? null : from.getSphere();
+                if (movingSphere == null || to == null)
+                    throw new IllegalStateException("Canonical move cannot be mapped to the current board");
+                return MCTSTree.Action.move(movingSphere, to);
+            case REMOVE_FIRST:
+                PylosSphere firstRemoval = from == null ? null : from.getSphere();
+                if (firstRemoval == null)
+                    throw new IllegalStateException("Canonical first removal cannot be mapped to the current board");
+                return MCTSTree.Action.removeFirst(firstRemoval);
+            case REMOVE_SECOND:
+                PylosSphere secondRemoval = from == null ? null : from.getSphere();
+                if (secondRemoval == null)
+                    throw new IllegalStateException("Canonical second removal cannot be mapped to the current board");
+                return MCTSTree.Action.removeSecond(secondRemoval);
+            case PASS:
+                return MCTSTree.Action.pass();
+            default:
+                throw new IllegalStateException("Unsupported canonical action type: " + canonicalAction.type);
         }
-        throw new IllegalStateException("Canonical action has no legal equivalent in the current orientation: " + canonicalAction);
     }
 
     private static long occupancy(PylosBoard board, int symmetry) {
