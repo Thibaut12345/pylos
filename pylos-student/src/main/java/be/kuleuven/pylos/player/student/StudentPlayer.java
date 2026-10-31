@@ -98,7 +98,7 @@ public class StudentPlayer extends PylosPlayer {
         if (chosenTreeAction == null) return null;
         PylosSymmetry.Position position = canonicalPosition();
         //decisionsMade++;
-        return PylosSymmetry.toActualAction(chosenTreeAction, legalActions(), position);
+        return PylosSymmetry.toActualAction(chosenTreeAction, board, simulator.getColor(), position);
     }
 
     private void runOneIteration(MCTSTree.Node root) {
@@ -113,12 +113,14 @@ public class StudentPlayer extends PylosPlayer {
         try {
             int depth = 0;
             while (!isTerminal()) {
-                List<MCTSTree.Action> actualLegal = legalActions();
-                if (actualLegal.isEmpty()) throw new IllegalStateException("No legal actions in " + simulator.getState());
                 PylosSymmetry.Position position = canonicalPosition();
-                List<MCTSTree.Action> canonicalLegal = canonicalActions(actualLegal, position);
-                MCTSTree.Node child = tree.selectOrExpand(node, canonicalLegal);
-                MCTSTree.Action actualAction = PylosSymmetry.toActualAction(child.getAction(), actualLegal, position);
+                MCTSTree.Node child = tree.selectOrExpand(
+                        node,
+                        () -> canonicalActions(legalActions(), position)
+                );
+                MCTSTree.Action actualAction = PylosSymmetry.toActualAction(
+                        child.getAction(), board, simulator.getColor(), position
+                );
                 undo.add(apply(actualAction));
                 tree.observeState(child, stateKey(), simulator.getColor());
                 node = child;
