@@ -15,6 +15,8 @@ import be.kuleuven.pylos.player.codes.PlayerFactoryCodes;
 import be.kuleuven.pylos.player.codes.PylosPlayerBestFit;
 import be.kuleuven.pylos.player.codes.PylosPlayerMiniMax;
 import be.kuleuven.pylos.player.student.StudentPlayer;
+import be.kuleuven.pylos.player.student.StudentTimeBudgetPlayer;
+import be.kuleuven.pylos.player.student.StudentBasePlayer;
 import be.kuleuven.pylos.sprt.SPRT;
 import be.kuleuven.pylos.tournament.Tournament;
 import be.kuleuven.pylos.tournament.TournamentConfig;
@@ -39,14 +41,15 @@ public class PylosMain {
     }
 
     public static void startSPRT() {
-        PylosPlayerType newPlayer = new PylosPlayerType("Student - Random") {
+        PylosPlayerType newPlayer = new PylosPlayerType("new") {
             @Override
             public PylosPlayer create() {
                 return new PylosPlayerMiniMax(4);
-            }
+                //return new StudentTimeBudgetPlayer();
+                }
         };
 
-        PylosPlayerType basePlayer = new PylosPlayerType("Student") {
+        PylosPlayerType basePlayer = new PylosPlayerType("baseToCompareWith") {
             @Override
             public PylosPlayer create() {
                 return new StudentPlayer();
@@ -85,7 +88,8 @@ public class PylosMain {
         PylosPlayerType p1 = new PylosPlayerType("OtherPlayer") {
             @Override
             public PylosPlayer create() {
-                return new PylosPlayerMiniMax(4);
+                //return new StudentTimeBudgetPlayer();
+                return new PylosPlayerMiniMax(8);
                 //return new StudentPlayer();
             }
         };
@@ -93,7 +97,9 @@ public class PylosMain {
         PylosPlayerType p2 = new PylosPlayerType("Student") {
             @Override
             public PylosPlayer create() {
-                return new StudentPlayer();
+                //return new StudentPlayer();
+                return new StudentBasePlayer();
+                //return new StudentTimeBudgetPlayer();
             }
         };
 

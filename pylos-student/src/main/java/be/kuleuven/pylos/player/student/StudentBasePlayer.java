@@ -1,0 +1,680 @@
+package be.kuleuven.pylos.player.student;
+
+import be.kuleuven.pylos.game.*;
+import be.kuleuven.pylos.player.PylosPlayer;
+import be.kuleuven.pylos.player.PylosPlayerObserver;
+
+import java.util.*;
+
+/** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
+public class StudentBasePlayer extends PylosPlayer {
+    private static final int NUMBER_OF_SIMULATIONS = 1024;
+    private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
+    private static final int MAX_ROLLOUT_ACTIONS = 256;
+    private final Random searchRandom = new Random();
+
+    private PylosGameSimulator simulator;
+    private PylosBoard board;
+    private MCTSTreeBasePlayer lightTree;
+    private MCTSTreeBasePlayer darkTree;
+    private MCTSTreeBasePlayer tree;
+    private MCTSTreeBasePlayer.Action chosenTreeAction;
+    //private int decisionsMade;
+    //private boolean setDecisionsMade;
+
+    @Override public void doMove(PylosGameIF game, PylosBoard board) {
+        init(game.getState(), board);
+        MCTSTreeBasePlayer.Action chosenAction = searchBestAction();
+        if (chosenAction == null || (chosenAction.type != MCTSTreeBasePlayer.ActionType.PLACEMENT
+                && chosenAction.type != MCTSTreeBasePlayer.ActionType.MOVE)) {
+            throw new IllegalStateException("MCTS did not return a legal move action");
+        }
+        getObserver().checkingMoveSphere(chosenAction.sphere, chosenAction.location);
+        game.moveSphere(chosenAction.sphere, chosenAction.location);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
+    }
+
+    @Override public void doRemove(PylosGameIF game, PylosBoard board) {
+        init(game.getState(), board);
+        MCTSTreeBasePlayer.Action chosenAction = searchBestAction();
+        if (chosenAction == null || chosenAction.type != MCTSTreeBasePlayer.ActionType.REMOVE_FIRST)
+            throw new IllegalStateException("MCTS did not return a legal first-removal action");
+        getObserver().checkingRemoveSphere(chosenAction.sphere);
+        game.removeSphere(chosenAction.sphere);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
+    }
+
+    @Override public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
+        init(game.getState(), board);
+        MCTSTreeBasePlayer.Action chosenAction = searchBestAction();
+        if (chosenAction == null) throw new IllegalStateException("MCTS returned no second-removal action");
+        if (chosenAction.type == MCTSTreeBasePlayer.ActionType.PASS) game.pass();
+        else if (chosenAction.type == MCTSTreeBasePlayer.ActionType.REMOVE_SECOND) {
+            getObserver().checkingRemoveSphere(chosenAction.sphere);
+            game.removeSphere(chosenAction.sphere);
+        } else throw new IllegalStateException("Unexpected second-removal action: " + chosenAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
+    }
+
+    private void init(PylosGameState state, PylosBoard board) {
+//        if(!setDecisionsMade){
+//            setDecisionsMade = true;
+//            decisionsMade = 0;
+//        }
+        this.board = board;
+        this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
+        ensureTreesInitialized();
+        tree = treeFor(PLAYER_COLOR);
+        tree.ensureRoot(simulator.getColor(), stateKey());
+    }
+
+    @Override public void init(PylosPlayerColor playerColor, PylosPlayer other, PylosPlayerObserver observer, Random random) {
+        super.init(playerColor, other, observer, random);
+        ensureTreesInitialized();
+        tree = treeFor(PLAYER_COLOR);
+    }
+
+    private void ensureTreesInitialized() {
+        if (lightTree != null && darkTree != null) return;
+        long emptyBoardKey = initialStateKey();
+        if (lightTree == null) lightTree = new MCTSTreeBasePlayer(PylosPlayerColor.LIGHT, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
+        if (darkTree == null) darkTree = new MCTSTreeBasePlayer(PylosPlayerColor.DARK, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
+    }
+
+    private MCTSTreeBasePlayer treeFor(PylosPlayerColor color) {
+        return color == PylosPlayerColor.LIGHT ? lightTree : darkTree;
+    }
+
+    private static long initialStateKey() {
+        return 0L;
+    }
+
+    private MCTSTreeBasePlayer.Action searchBestAction() {
+        MCTSTreeBasePlayer.Node root = tree.getRoot();
+        for (int i = 0; i < NUMBER_OF_SIMULATIONS; i++) runOneIteration(root);
+        chosenTreeAction = tree.bestRootAction();
+        if (chosenTreeAction == null) return null;
+        PylosSymmetryBasePlayer.Position position = canonicalPosition();
+        //decisionsMade++;
+        return PylosSymmetryBasePlayer.toActualAction(chosenTreeAction, legalActions(), position);
+    }
+
+    private void runOneIteration(MCTSTreeBasePlayer.Node root) {
+        List<MCTSTreeBasePlayer.Node> path = new ArrayList<>();
+        List<UndoRecord> undo = new ArrayList<>();
+        MCTSTreeBasePlayer.Node node = root;
+        path.add(node);
+        PylosGameState startState = simulator.getState();
+        PylosPlayerColor startColor = simulator.getColor();
+        long before = stateKey();
+        double reward;
+        try {
+            int depth = 0;
+            while (!isTerminal()) {
+                List<MCTSTreeBasePlayer.Action> actualLegal = legalActions();
+                if (actualLegal.isEmpty()) throw new IllegalStateException("No legal actions in " + simulator.getState());
+                PylosSymmetryBasePlayer.Position position = canonicalPosition();
+                List<MCTSTreeBasePlayer.Action> canonicalLegal = canonicalActions(actualLegal, position);
+                MCTSTreeBasePlayer.Node child = tree.selectOrExpand(node, canonicalLegal);
+                MCTSTreeBasePlayer.Action actualAction = PylosSymmetryBasePlayer.toActualAction(child.getAction(), actualLegal, position);
+                undo.add(apply(actualAction));
+                tree.observeState(child, stateKey(), simulator.getColor());
+                node = child;
+                path.add(node);
+                if (node.getVisits() == 0 || ++depth >= MAX_ROLLOUT_ACTIONS) break;
+            }
+            reward = rollout(undo);
+        } finally {
+            undoAll(undo);
+            long after = stateKey();
+            if (before !=after) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
+            simulator = new PylosGameSimulator(startState, startColor, board);
+        }
+        tree.backpropagate(path, reward);
+    }
+
+    private double rollout(List<UndoRecord> undo) {
+        int start = undo.size(), actions = 0;
+        while (!isTerminal() && actions < MAX_ROLLOUT_ACTIONS) {
+            List<MCTSTreeBasePlayer.Action> legal = legalActions();
+            if (legal.isEmpty()) throw new IllegalStateException("No rollout actions in " + simulator.getState());
+            undo.add(apply(chooseRolloutAction(legal)));
+            actions++;
+        }
+        double reward;
+        if (simulator.getState() == PylosGameState.COMPLETED)
+            reward = simulator.getWinner() == PLAYER_COLOR ? WIN_SCORE : LOSS_SCORE;
+        else if (simulator.getState() == PylosGameState.DRAW) reward = DRAW_SCORE;
+        else reward = DRAW_SCORE;
+        for (int i = undo.size() - 1; i >= start; i--) undo(undo.remove(i));
+        return reward;
+    }
+
+
+    private MCTSTreeBasePlayer.Action chooseRolloutAction(List<MCTSTreeBasePlayer.Action> available) {
+        PylosPlayerColor mover = simulator.getColor();
+        List<MCTSTreeBasePlayer.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();
+        MCTSTreeBasePlayer.Action winning = null;
+        for (MCTSTreeBasePlayer.Action action : available) {
+            UndoRecord record = apply(action);
+            PylosGameState state = simulator.getState();
+            PylosPlayerColor winner = simulator.getWinner();
+            if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
+            if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
+            if (state == PylosGameState.REMOVE_FIRST) squareMoves.add(action);
+            undo(record);
+            simulator = new PylosGameSimulator(record.state, record.color, board);
+            if (winning != null) break;
+        }
+        if (winning != null) return winning;
+        if (!squareMoves.isEmpty() && searchRandom.nextDouble() < 0.75)
+            return squareMoves.get(searchRandom.nextInt(squareMoves.size()));
+        List<MCTSTreeBasePlayer.Action> choices = safe.isEmpty() ? available : safe;
+        return choices.get(searchRandom.nextInt(choices.size()));
+    }
+
+    private List<MCTSTreeBasePlayer.Action> legalActions() {
+        PylosGameState state = simulator.getState();
+        PylosPlayerColor color = simulator.getColor();
+        List<MCTSTreeBasePlayer.Action> actions = new ArrayList<>();
+        if (state == PylosGameState.MOVE) {
+            for (PylosSphere sphere : board.getSpheres(color)) {
+                if (sphere.isReserve() || !sphere.canMove()) continue;
+                for (PylosLocation location : board.getLocations())
+                    if (sphere.canMoveTo(location)) actions.add(MCTSTreeBasePlayer.Action.move(sphere, location));
+            }
+            PylosSphere reserve = board.getReserve(color);
+            if (reserve != null) for (PylosLocation location : board.getLocations())
+                if (location.isUsable()) actions.add(MCTSTreeBasePlayer.Action.placement(reserve, location));
+        } else if (state == PylosGameState.REMOVE_FIRST) {
+            for (PylosSphere sphere : board.getSpheres(color))
+                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTreeBasePlayer.Action.removeFirst(sphere));
+        } else if (state == PylosGameState.REMOVE_SECOND) {
+            for (PylosSphere sphere : board.getSpheres(color))
+                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTreeBasePlayer.Action.removeSecond(sphere));
+            actions.add(MCTSTreeBasePlayer.Action.pass());
+        }
+        return actions;
+    }
+
+    private List<MCTSTreeBasePlayer.Action> canonicalActions(List<MCTSTreeBasePlayer.Action> actual, PylosSymmetryBasePlayer.Position position) {
+        List<MCTSTreeBasePlayer.Action> canonical = new ArrayList<>(actual.size());
+        for (MCTSTreeBasePlayer.Action action : actual) canonical.add(PylosSymmetryBasePlayer.toCanonicalAction(action, position));
+        return canonical;
+    }
+
+    private PylosSymmetryBasePlayer.Position canonicalPosition() {
+        return PylosSymmetryBasePlayer.canonicalize(board, simulator.getState(), simulator.getColor());
+    }
+
+    private UndoRecord apply(MCTSTreeBasePlayer.Action action) {
+        PylosGameState state = simulator.getState();
+        PylosPlayerColor color = simulator.getColor();
+        PylosLocation location = action.sphere == null ? null : action.sphere.getLocation();
+        switch (action.type) {
+            case PLACEMENT: case MOVE: simulator.moveSphere(action.sphere, action.location); break;
+            case REMOVE_FIRST: case REMOVE_SECOND: simulator.removeSphere(action.sphere); break;
+            case PASS: simulator.pass(); break;
+            default: throw new IllegalStateException("Unknown action: " + action.type);
+        }
+        return new UndoRecord(action, state, color, location);
+    }
+
+    private void undo(UndoRecord r) {
+        switch (r.action.type) {
+            case PLACEMENT: simulator.undoAddSphere(r.action.sphere, r.state, r.color); break;
+            case MOVE: simulator.undoMoveSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case REMOVE_FIRST: simulator.undoRemoveFirstSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case REMOVE_SECOND: simulator.undoRemoveSecondSphere(r.action.sphere, r.location, r.state, r.color); break;
+            case PASS: simulator.undoPass(r.state, r.color); break;
+            default: throw new IllegalStateException("Unknown action: " + r.action.type);
+        }
+    }
+
+    private void undoAll(List<UndoRecord> records) {
+        for (int i = records.size() - 1; i >= 0; i--) undo(records.get(i));
+        records.clear();
+    }
+
+    private boolean isTerminal() {
+        PylosGameState s = simulator.getState();
+        return s == PylosGameState.COMPLETED || s == PylosGameState.DRAW || s == PylosGameState.ABORTED;
+    }
+
+    private long stateKey() { return canonicalPosition().getKey(); }
+
+    private static final class UndoRecord {
+        private final MCTSTreeBasePlayer.Action action;
+        private final PylosGameState state;
+        private final PylosPlayerColor color;
+        private final PylosLocation location;
+        private UndoRecord(MCTSTreeBasePlayer.Action action, PylosGameState state, PylosPlayerColor color, PylosLocation location) {
+            this.action = action; this.state = state; this.color = color; this.location = location;
+        }
+    }
+}
+
+
+final class MCTSTreeBasePlayer {
+    public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(1.0);
+    public enum ActionType { PLACEMENT, MOVE, REMOVE_FIRST, REMOVE_SECOND, PASS }
+
+
+    public static final class Action {
+        public final ActionType type;
+        public final PylosSphere sphere;
+        public final PylosLocation location;
+        private final boolean canonical;
+        private final int fromIndex;
+        private final int toIndex;
+
+        private Action(ActionType type, PylosSphere sphere, PylosLocation location, boolean canonical, int fromIndex, int toIndex) {
+            this.type = type;
+            this.sphere = sphere;
+            this.location = location;
+            this.canonical = canonical;
+            this.fromIndex = fromIndex;
+            this.toIndex = toIndex;
+        }
+        public static Action placement(PylosSphere s, PylosLocation l) { return actual(ActionType.PLACEMENT, s, l); }
+        public static Action move(PylosSphere s, PylosLocation l) { return actual(ActionType.MOVE, s, l); }
+        public static Action removeFirst(PylosSphere s) { return actual(ActionType.REMOVE_FIRST, s, null); }
+        public static Action removeSecond(PylosSphere s) { return actual(ActionType.REMOVE_SECOND, s, null); }
+        public static Action pass() { return actual(ActionType.PASS, null, null); }
+        private static Action actual(ActionType type, PylosSphere sphere, PylosLocation location) {
+            return new Action(type, sphere, location, false, -1, -1);
+        }
+        static Action canonical(ActionType type, int fromIndex, int toIndex) {
+            return new Action(type, null, null, true, fromIndex, toIndex);
+        }
+        public boolean sameAs(Action other) {
+            if (other == null || type != other.type || canonical != other.canonical) return false;
+            if (canonical) return fromIndex == other.fromIndex && toIndex == other.toIndex;
+            return sphere == other.sphere && location == other.location;
+        }
+    }
+
+    public static final class Node {
+        private final Action action;
+        private final List<Node> children = new ArrayList<>();
+        private List<Action> unexpandedActions;
+        private int visits;
+        private double totalReward;
+        private long stateKey;
+        private boolean observed;
+        private PylosPlayerColor playerToMove;
+
+        private Node(Action action, long key, PylosPlayerColor player) {
+            this.action = action; stateKey = key; playerToMove = player; observed = (player != null);
+        }
+        public Action getAction() { return action; }
+        public int getVisits() { return visits; }
+        public double getMeanReward() { return visits == 0 ? 0.0 : totalReward / visits; }
+        public PylosPlayerColor getColor() { return playerToMove; }
+        public long getStateKey() { return stateKey; }
+        public boolean isObserved() { return observed; }
+        public boolean needsActions() { return unexpandedActions == null; }
+        public void setObservedState(long key, PylosPlayerColor color) {
+            if (color == null) throw new IllegalArgumentException("Observed state and player are required");
+            if (observed) {
+                if (stateKey != key || playerToMove != color)
+                    throw new IllegalStateException("Node state mismatch: same canonical action produced a different state");
+                return;
+            }
+            stateKey = key; playerToMove = color; observed = true;
+        }
+    }
+
+    private final Random random;
+    private final double explorationConstant;
+    private final PylosPlayerColor rewardPerspective;
+
+    private final Node persistentRoot;
+    private Node root;
+    private final Map<Long, Node> stateIndex = new HashMap<>();
+
+
+    public MCTSTreeBasePlayer(PylosPlayerColor rewardPerspective, long key, PylosPlayerColor playerToMove, Random random) {
+        this(rewardPerspective, key, playerToMove, random, DEFAULT_EXPLORATION_CONSTANT);
+    }
+
+    public MCTSTreeBasePlayer(PylosPlayerColor rewardPerspective, long key, PylosPlayerColor playerToMove, Random random, double explorationConstant) {
+        if (rewardPerspective == null || playerToMove == null || random == null)
+            throw new IllegalArgumentException("Reward perspective, root player, key and RNG are required");
+        if (explorationConstant < 0.0 || Double.isNaN(explorationConstant))
+            throw new IllegalArgumentException("Invalid exploration constant");
+        this.random = random;
+        this.explorationConstant = explorationConstant;
+        this.rewardPerspective = rewardPerspective;
+        persistentRoot = new Node(null, key, playerToMove);
+        root = persistentRoot;
+        indexState(persistentRoot);
+    }
+
+    public Node getRoot() { return root; }
+
+    public void ensureRoot(PylosPlayerColor player, long key) {
+        if (player == null) throw new IllegalArgumentException("Root player and key are required");
+        if (player == root.playerToMove && key == root.stateKey) return;
+        Node match = stateIndex.get(key);
+        if (match == null) {
+            match = new Node( null, key, player);
+            indexState(match);
+        }
+        root = match;
+    }
+
+    public void observeState(Node node, long key, PylosPlayerColor player) {
+        if (node == null) throw new IllegalArgumentException("Node is required");
+        node.setObservedState(key, player);
+        indexState(node);
+    }
+
+    private void indexState(Node node) {
+        if (node.observed)
+            stateIndex.putIfAbsent(node.stateKey, node);
+    }
+
+    public Node selectOrExpand(Node node, List<Action> legal) {
+        if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
+        if (node.unexpandedActions == null) {
+            node.unexpandedActions = new ArrayList<>(legal);
+            //Collections.shuffle(node.unexpandedActions, random);
+        }
+        if (!node.unexpandedActions.isEmpty()) {
+            Node child = new Node( node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
+            node.children.add(child); return child;
+        }
+        Node best = null; double bestValue = Double.NEGATIVE_INFINITY;
+        for (Node child : node.children) {
+            if (child.visits == 0) return child;
+            double exploitation = child.totalReward / child.visits;
+            if (node.playerToMove != rewardPerspective) exploitation = -exploitation;
+            double exploration = explorationConstant * Math.sqrt(Math.log(Math.max(1, node.visits)) / child.visits);
+            double value = exploitation + exploration;
+            if (value > bestValue) { bestValue = value; best = child; }
+        }
+        if (best == null) throw new IllegalStateException("No child available for UCT selection");
+        return best;
+    }
+
+    public void backpropagate(List<Node> path, double reward) {
+        if (path == null) throw new IllegalArgumentException("Path is required");
+        if (Double.isNaN(reward) || reward < -1.0 || reward > 1.0) throw new IllegalArgumentException("Reward must be in [-1,1]");
+        for (Node node : path) { node.visits++; node.totalReward += reward; }
+    }
+
+    public Action bestRootAction() {
+        Node best = null; double bestMean = Double.NEGATIVE_INFINITY;
+        for (Node child : root.children) {
+            double mean = child.visits == 0 ? Double.NEGATIVE_INFINITY : child.totalReward / child.visits;
+            if (best == null || child.visits > best.visits || (child.visits == best.visits && mean > bestMean)) {
+                best = child; bestMean = mean;
+            }
+        }
+        return best == null ? null : best.action;
+    }
+
+    public void advanceRoot(Action canonicalAction) {
+        if (canonicalAction == null || !canonicalAction.canonical) throw new IllegalArgumentException("A canonical tree action is required");
+        Node selected = null;
+        for (Node child : root.children) if (child.action != null && child.action.sameAs(canonicalAction)) { selected = child; break; }
+        if (selected == null) throw new IllegalStateException("Selected canonical action is not a child of the current root");
+        if (!selected.observed) throw new IllegalStateException("Selected child has no observed state");
+        root = selected;
+        indexState(selected);
+    }
+}
+
+final class PylosSymmetryBasePlayer {
+    private static final int LOCATION_COUNT = 30;
+    private static final int SYMMETRY_COUNT = 8;
+    private static final int[][][] COORDINATES = createCoordinateSequences();
+
+    private PylosSymmetryBasePlayer() { }
+
+    public static final class Position {
+        private final long key;
+        private final int symmetry;
+
+        private Position(long key, int symmetry) {
+            this.key = key;
+            this.symmetry = symmetry;
+        }
+
+        public long getKey() { return key; }
+
+        public int indexOf(PylosLocation location) {
+            if (location == null) {
+                return -1;
+            }
+
+            return COORDINATE_INDEX[symmetry]
+                    [location.X][location.Y][location.Z];
+        }
+
+        private static final int[][][][] COORDINATE_INDEX = createCoordinateIndex();
+
+        private static int[][][][] createCoordinateIndex() {
+            int[][][][] index = new int[SYMMETRY_COUNT][4][4][4];
+
+            for (int symmetry = 0; symmetry < SYMMETRY_COUNT; symmetry++) {
+                for (int i = 0; i < LOCATION_COUNT; i++) {
+                    int x = COORDINATES[symmetry][i][0];
+                    int y = COORDINATES[symmetry][i][1];
+                    int z = COORDINATES[symmetry][i][2];
+
+                    index[symmetry][x][y][z] = i;
+                }
+            }
+
+            return index;
+        }
+    }
+
+    public static Position canonicalize(PylosBoard board, PylosGameState state, PylosPlayerColor playerToMove) {
+        if (board == null || state == null || playerToMove == null) throw new IllegalArgumentException("Board, state and player-to-move are required");
+
+        int bestSymmetry = 0;
+        long bestOccupancy = occupancy(board, 0);
+        for (int symmetry = 1; symmetry < SYMMETRY_COUNT; symmetry++) {
+            long candidate = occupancy(board, symmetry);
+            if (Long.compareUnsigned(candidate, bestOccupancy) < 0) {
+                bestOccupancy = candidate;
+                bestSymmetry = symmetry;
+            }
+        }
+        long key = bestOccupancy | ((long) state.ordinal() << 60);
+        if (playerToMove == PylosPlayerColor.DARK) key |= Long.MIN_VALUE;
+        return new Position(key, bestSymmetry);
+    }
+
+    public static MCTSTreeBasePlayer.Action toCanonicalAction(MCTSTreeBasePlayer.Action action, Position position) {
+        if (action == null || position == null) throw new IllegalArgumentException("Action and position are required");
+        int from = -1;
+        int to = -1;
+        switch (action.type) {
+            case PLACEMENT:
+                to = position.indexOf(action.location);
+                break;
+            case MOVE:
+                from = position.indexOf(action.sphere.getLocation());
+                to = position.indexOf(action.location);
+                break;
+            case REMOVE_FIRST:
+            case REMOVE_SECOND:
+                from = position.indexOf(action.sphere.getLocation());
+                break;
+            case PASS:
+                break;
+            default:
+                throw new IllegalStateException("Unsupported action type: " + action.type);
+        }
+        return MCTSTreeBasePlayer.Action.canonical(action.type, from, to);
+    }
+
+    public static MCTSTreeBasePlayer.Action toActualAction(
+            MCTSTreeBasePlayer.Action canonicalAction,
+            Iterable<MCTSTreeBasePlayer.Action> actualLegalActions,
+            Position position
+    ) {
+        if (canonicalAction == null || actualLegalActions == null || position == null)
+            throw new IllegalArgumentException("Canonical action, legal actions and position are required");
+        for (MCTSTreeBasePlayer.Action actual : actualLegalActions) {
+            if (canonicalAction.sameAs(toCanonicalAction(actual, position))) return actual;
+        }
+        throw new IllegalStateException("Canonical action has no legal equivalent in the current orientation: " + canonicalAction);
+    }
+
+    private static long occupancy(PylosBoard board, int symmetry) {
+        long bits = 0L;
+        for (int i = 0; i < LOCATION_COUNT; i++) {
+            int[] c = COORDINATES[symmetry][i];
+            PylosSphere sphere = board.getBoardLocation(c[0], c[1], c[2]).getSphere();
+            int value = sphere == null ? 0
+                    : sphere.PLAYER_COLOR == PylosPlayerColor.LIGHT ? 1 : 2;
+            bits = (bits << 2) | value;
+        }
+        return bits;
+    }
+
+    private static int[][][] createCoordinateSequences() {
+        return new int[][][] {
+                // Symmetry 0
+                {
+                        {0,0,0}, {0,1,0}, {0,2,0}, {0,3,0},
+                        {1,0,0}, {1,1,0}, {1,2,0}, {1,3,0},
+                        {2,0,0}, {2,1,0}, {2,2,0}, {2,3,0},
+                        {3,0,0}, {3,1,0}, {3,2,0}, {3,3,0},
+
+                        {0,0,1}, {0,1,1}, {0,2,1},
+                        {1,0,1}, {1,1,1}, {1,2,1},
+                        {2,0,1}, {2,1,1}, {2,2,1},
+
+                        {0,0,2}, {0,1,2},
+                        {1,0,2}, {1,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 1
+                {
+                        {0,0,0}, {1,0,0}, {2,0,0}, {3,0,0},
+                        {0,1,0}, {1,1,0}, {2,1,0}, {3,1,0},
+                        {0,2,0}, {1,2,0}, {2,2,0}, {3,2,0},
+                        {0,3,0}, {1,3,0}, {2,3,0}, {3,3,0},
+
+                        {0,0,1}, {1,0,1}, {2,0,1},
+                        {0,1,1}, {1,1,1}, {2,1,1},
+                        {0,2,1}, {1,2,1}, {2,2,1},
+
+                        {0,0,2}, {1,0,2},
+                        {0,1,2}, {1,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 2
+                {
+                        {3,0,0}, {3,1,0}, {3,2,0}, {3,3,0},
+                        {2,0,0}, {2,1,0}, {2,2,0}, {2,3,0},
+                        {1,0,0}, {1,1,0}, {1,2,0}, {1,3,0},
+                        {0,0,0}, {0,1,0}, {0,2,0}, {0,3,0},
+
+                        {2,0,1}, {2,1,1}, {2,2,1},
+                        {1,0,1}, {1,1,1}, {1,2,1},
+                        {0,0,1}, {0,1,1}, {0,2,1},
+
+                        {1,0,2}, {1,1,2},
+                        {0,0,2}, {0,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 3
+                {
+                        {3,0,0}, {2,0,0}, {1,0,0}, {0,0,0},
+                        {3,1,0}, {2,1,0}, {1,1,0}, {0,1,0},
+                        {3,2,0}, {2,2,0}, {1,2,0}, {0,2,0},
+                        {3,3,0}, {2,3,0}, {1,3,0}, {0,3,0},
+
+                        {2,0,1}, {1,0,1}, {0,0,1},
+                        {2,1,1}, {1,1,1}, {0,1,1},
+                        {2,2,1}, {1,2,1}, {0,2,1},
+
+                        {1,0,2}, {0,0,2},
+                        {1,1,2}, {0,1,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 4
+                {
+                        {3,3,0}, {3,2,0}, {3,1,0}, {3,0,0},
+                        {2,3,0}, {2,2,0}, {2,1,0}, {2,0,0},
+                        {1,3,0}, {1,2,0}, {1,1,0}, {1,0,0},
+                        {0,3,0}, {0,2,0}, {0,1,0}, {0,0,0},
+
+                        {2,2,1}, {2,1,1}, {2,0,1},
+                        {1,2,1}, {1,1,1}, {1,0,1},
+                        {0,2,1}, {0,1,1}, {0,0,1},
+
+                        {1,1,2}, {1,0,2},
+                        {0,1,2}, {0,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 5
+                {
+                        {3,3,0}, {2,3,0}, {1,3,0}, {0,3,0},
+                        {3,2,0}, {2,2,0}, {1,2,0}, {0,2,0},
+                        {3,1,0}, {2,1,0}, {1,1,0}, {0,1,0},
+                        {3,0,0}, {2,0,0}, {1,0,0}, {0,0,0},
+
+                        {2,2,1}, {1,2,1}, {0,2,1},
+                        {2,1,1}, {1,1,1}, {0,1,1},
+                        {2,0,1}, {1,0,1}, {0,0,1},
+
+                        {1,1,2}, {0,1,2},
+                        {1,0,2}, {0,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 6
+                {
+                        {0,3,0}, {0,2,0}, {0,1,0}, {0,0,0},
+                        {1,3,0}, {1,2,0}, {1,1,0}, {1,0,0},
+                        {2,3,0}, {2,2,0}, {2,1,0}, {2,0,0},
+                        {3,3,0}, {3,2,0}, {3,1,0}, {3,0,0},
+
+                        {0,2,1}, {0,1,1}, {0,0,1},
+                        {1,2,1}, {1,1,1}, {1,0,1},
+                        {2,2,1}, {2,1,1}, {2,0,1},
+
+                        {0,1,2}, {0,0,2},
+                        {1,1,2}, {1,0,2},
+
+                        {0,0,3}
+                },
+
+                // Symmetry 7
+                {
+                        {0,3,0}, {1,3,0}, {2,3,0}, {3,3,0},
+                        {0,2,0}, {1,2,0}, {2,2,0}, {3,2,0},
+                        {0,1,0}, {1,1,0}, {2,1,0}, {3,1,0},
+                        {0,0,0}, {1,0,0}, {2,0,0}, {3,0,0},
+
+                        {0,2,1}, {1,2,1}, {2,2,1},
+                        {0,1,1}, {1,1,1}, {2,1,1},
+                        {0,0,1}, {1,0,1}, {2,0,1},
+
+                        {0,1,2}, {1,1,2},
+                        {0,0,2}, {1,0,2},
+
+                        {0,0,3}
+                }
+        };
+    }
+}

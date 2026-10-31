@@ -10,9 +10,9 @@ import java.util.Random;
 
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentPlayer extends PylosPlayer {
-    private static final int NUMBER_OF_SIMULATIONS = 512;
+    private static final int NUMBER_OF_SIMULATIONS = 1024;
     private static final double WIN_SCORE = 1.0, DRAW_SCORE = 0.0, LOSS_SCORE = -1.0;
-    private static final int MAX_ROLLOUT_ACTIONS = 1024;
+    private static final int MAX_ROLLOUT_ACTIONS = 256;
     private final Random searchRandom = new Random();
 
     private PylosGameSimulator simulator;
@@ -21,6 +21,8 @@ public class StudentPlayer extends PylosPlayer {
     private MCTSTree darkTree;
     private MCTSTree tree;
     private MCTSTree.Action chosenTreeAction;
+    //private int decisionsMade;
+    //private boolean setDecisionsMade;
 
     @Override public void doMove(PylosGameIF game, PylosBoard board) {
         init(game.getState(), board);
@@ -31,7 +33,7 @@ public class StudentPlayer extends PylosPlayer {
         }
         getObserver().checkingMoveSphere(chosenAction.sphere, chosenAction.location);
         game.moveSphere(chosenAction.sphere, chosenAction.location);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     @Override public void doRemove(PylosGameIF game, PylosBoard board) {
@@ -41,7 +43,7 @@ public class StudentPlayer extends PylosPlayer {
             throw new IllegalStateException("MCTS did not return a legal first-removal action");
         getObserver().checkingRemoveSphere(chosenAction.sphere);
         game.removeSphere(chosenAction.sphere);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     @Override public void doRemoveOrPass(PylosGameIF game, PylosBoard board) {
@@ -53,10 +55,14 @@ public class StudentPlayer extends PylosPlayer {
             getObserver().checkingRemoveSphere(chosenAction.sphere);
             game.removeSphere(chosenAction.sphere);
         } else throw new IllegalStateException("Unexpected second-removal action: " + chosenAction);
-        tree.advanceRoot(chosenTreeAction);
+        if (chosenTreeAction != null) tree.advanceRoot(chosenTreeAction);
     }
 
     private void init(PylosGameState state, PylosBoard board) {
+//        if(!setDecisionsMade){
+//            setDecisionsMade = true;
+//            decisionsMade = 0;
+//        }
         this.board = board;
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
         ensureTreesInitialized();
@@ -72,7 +78,7 @@ public class StudentPlayer extends PylosPlayer {
 
     private void ensureTreesInitialized() {
         if (lightTree != null && darkTree != null) return;
-        String emptyBoardKey = initialStateKey();
+        long emptyBoardKey = initialStateKey();
         if (lightTree == null) lightTree = new MCTSTree(PylosPlayerColor.LIGHT, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
         if (darkTree == null) darkTree = new MCTSTree(PylosPlayerColor.DARK, emptyBoardKey, PylosPlayerColor.LIGHT, searchRandom);
     }
@@ -81,10 +87,8 @@ public class StudentPlayer extends PylosPlayer {
         return color == PylosPlayerColor.LIGHT ? lightTree : darkTree;
     }
 
-    private static String initialStateKey() {
-        StringBuilder empty = new StringBuilder(30);
-        for (int i = 0; i < 30; i++) empty.append('0');
-        return PylosGameState.MOVE.name() + "|" + PylosPlayerColor.LIGHT.name() + "|" + empty;
+    private static long initialStateKey() {
+        return 0L;
     }
 
     private MCTSTree.Action searchBestAction() {
@@ -93,6 +97,7 @@ public class StudentPlayer extends PylosPlayer {
         chosenTreeAction = tree.bestRootAction();
         if (chosenTreeAction == null) return null;
         PylosSymmetry.Position position = canonicalPosition();
+        //decisionsMade++;
         return PylosSymmetry.toActualAction(chosenTreeAction, legalActions(), position);
     }
 
@@ -103,7 +108,7 @@ public class StudentPlayer extends PylosPlayer {
         path.add(node);
         PylosGameState startState = simulator.getState();
         PylosPlayerColor startColor = simulator.getColor();
-        String before = stateKey();
+        long before = stateKey();
         double reward;
         try {
             int depth = 0;
@@ -123,8 +128,8 @@ public class StudentPlayer extends PylosPlayer {
             reward = rollout(undo);
         } finally {
             undoAll(undo);
-            String after = stateKey();
-            if (!before.equals(after)) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
+            long after = stateKey();
+            if (before !=after) throw new IllegalStateException("Board restoration failed: " + before + " != " + after);
             simulator = new PylosGameSimulator(startState, startColor, board);
         }
         tree.backpropagate(path, reward);
@@ -238,7 +243,7 @@ public class StudentPlayer extends PylosPlayer {
         return s == PylosGameState.COMPLETED || s == PylosGameState.DRAW || s == PylosGameState.ABORTED;
     }
 
-    private String stateKey() { return canonicalPosition().getKey(); }
+    private long stateKey() { return canonicalPosition().getKey(); }
 
     private static final class UndoRecord {
         private final MCTSTree.Action action;
