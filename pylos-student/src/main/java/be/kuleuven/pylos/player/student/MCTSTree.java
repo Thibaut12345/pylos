@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Random;
+import java.util.function.Supplier;
 
 public final class MCTSTree {
     public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(1.0);
@@ -130,11 +131,14 @@ public final class MCTSTree {
             stateIndex.putIfAbsent(node.stateKey, node);
     }
 
-    public Node selectOrExpand(Node node, List<Action> legal) {
-        if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
+    public Node selectOrExpand(Node node, Supplier<List<Action>> legalActionsSupplier) {
+        if (node == null || legalActionsSupplier == null)
+            throw new IllegalArgumentException("Node and legal-action supplier are required");
         if (node.unexpandedActions == null) {
+            List<Action> legal = legalActionsSupplier.get();
+            if (legal == null || legal.isEmpty())
+                throw new IllegalArgumentException("A non-empty legal-action list is required");
             node.unexpandedActions = new ArrayList<>(legal);
-            //Collections.shuffle(node.unexpandedActions, random);
         }
         if (!node.unexpandedActions.isEmpty()) {
             Node child = new Node( node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
