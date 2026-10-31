@@ -4,9 +4,9 @@ import be.kuleuven.pylos.game.PylosLocation;
 import be.kuleuven.pylos.game.PylosPlayerColor;
 import be.kuleuven.pylos.game.PylosSphere;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Random;
 import java.util.function.Supplier;
@@ -53,7 +53,8 @@ public final class MCTSTree {
     public static final class Node {
         private final Action action;
         private final List<Node> children = new ArrayList<>();
-        private List<Action> unexpandedActions;
+        private final BitSet expandedActionIds = new BitSet();
+        private int expandedActionCount;
         private int visits;
         private double totalReward;
         private long stateKey;
@@ -69,7 +70,7 @@ public final class MCTSTree {
         public PylosPlayerColor getColor() { return playerToMove; }
         public long getStateKey() { return stateKey; }
         public boolean isObserved() { return observed; }
-        public boolean needsActions() { return unexpandedActions == null; }
+        public boolean needsActions() { return expandedActionCount == 0; }
         public void setObservedState(long key, PylosPlayerColor color) {
             if (color == null) throw new IllegalArgumentException("Observed state and player are required");
             if (observed) {
@@ -134,15 +135,22 @@ public final class MCTSTree {
     public Node selectOrExpand(Node node, Supplier<List<Action>> legalActionsSupplier) {
         if (node == null || legalActionsSupplier == null)
             throw new IllegalArgumentException("Node and legal-action supplier are required");
-        if (node.unexpandedActions == null) {
-            List<Action> legal = legalActionsSupplier.get();
-            if (legal == null || legal.isEmpty())
-                throw new IllegalArgumentException("A non-empty legal-action list is required");
-            node.unexpandedActions = new ArrayList<>(legal);
-        }
-        if (!node.unexpandedActions.isEmpty()) {
-            Node child = new Node( node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
-            node.children.add(child); return child;
+        List<Action> legal = legalActionsSupplier.get();
+        if (legal == null || legal.isEmpty())
+            throw new IllegalArgumentException("A non-empty legal-action list is required");
+
+        // Keep only compact action identifiers in the node. The temporary legal-action
+        // list can be discarded after finding and marking one action as expanded.
+        for (int i = legal.size() - 1; i >= 0; i--) {
+            Action action = legal.get(i);
+            int actionId = actionId(action);
+            if (!node.expandedActionIds.get(actionId)) {
+                node.expandedActionIds.set(actionId);
+                node.expandedActionCount++;
+                Node child = new Node(action, 0L, null);
+                node.children.add(child);
+                return child;
+            }
         }
         Node best = null; double bestValue = Double.NEGATIVE_INFINITY;
         for (Node child : node.children) {
@@ -155,6 +163,13 @@ public final class MCTSTree {
         }
         if (best == null) throw new IllegalStateException("No child available for UCT selection");
         return best;
+    }
+
+    private static int actionId(Action action) {
+        // Each action type has a disjoint 31 x 31 range. Index -1 is encoded as 0.
+        int from = action.fromIndex + 1;
+        int to = action.toIndex + 1;
+        return action.type.ordinal() * 31 * 31 + from * 31 + to;
     }
 
     public void backpropagate(List<Node> path, double reward) {
