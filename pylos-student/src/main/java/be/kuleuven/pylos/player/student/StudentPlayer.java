@@ -159,22 +159,65 @@ public class StudentPlayer extends PylosPlayer {
         PylosPlayerColor mover = simulator.getColor();
         List<MCTSTree.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();
         MCTSTree.Action winning = null;
+
+        // Square detection is a board-geometry check. Avoid changing the simulator
+        // for every rollout candidate merely to discover whether it grants removals.
+        boolean lastReserve = board.getReservesSize(mover) == 1;
         for (MCTSTree.Action action : available) {
-            UndoRecord record = apply(action);
-            PylosGameState state = simulator.getState();
-            PylosPlayerColor winner = simulator.getWinner();
-            if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
-            if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
-            if (state == PylosGameState.REMOVE_FIRST) squareMoves.add(action);
-            undo(record);
-            simulator = new PylosGameSimulator(record.state, record.color, board);
-            if (winning != null) break;
+            boolean createsSquare = isSquareCompletedBy(action, mover);
+            if (createsSquare) {
+                squareMoves.add(action);
+                safe.add(action);
+                continue;
+            }
+
+            // Only a placement using the player's final reserve can terminate the
+            // game by exhausting that reserve. Other actions cannot cause this win check.
+            if (lastReserve && action.type == MCTSTree.ActionType.PLACEMENT) {
+                UndoRecord record = apply(action);
+                PylosGameState state = simulator.getState();
+                PylosPlayerColor winner = simulator.getWinner();
+                if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
+                if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
+                undo(record);
+                simulator = new PylosGameSimulator(record.state, record.color, board);
+                if (winning != null) break;
+            } else {
+                safe.add(action);
+            }
         }
+
         if (winning != null) return winning;
         if (!squareMoves.isEmpty() && searchRandom.nextDouble() < 0.75)
             return squareMoves.get(searchRandom.nextInt(squareMoves.size()));
         List<MCTSTree.Action> choices = safe.isEmpty() ? available : safe;
         return choices.get(searchRandom.nextInt(choices.size()));
+    }
+
+    /**
+     * Returns whether this placement or upward move completes a same-color square.
+     * The destination is considered occupied by the mover; a moved sphere's origin
+     * is considered empty. PylosLocation.getSquares() includes standard and advanced
+     * game-mode square patterns.
+     */
+    private boolean isSquareCompletedBy(MCTSTree.Action action, PylosPlayerColor mover) {
+        if (action.type != MCTSTree.ActionType.PLACEMENT
+                && action.type != MCTSTree.ActionType.MOVE) return false;
+
+        PylosLocation destination = action.location;
+        PylosLocation origin = action.type == MCTSTree.ActionType.MOVE
+                ? action.sphere.getLocation() : null;
+
+        for (PylosSquare square : destination.getSquares()) {
+            int sameColorCount = 0;
+            for (PylosLocation location : square.getLocations()) {
+                if (location == destination || location == origin) continue;
+                PylosSphere occupied = location.getSphere();
+                if (occupied != null && occupied.PLAYER_COLOR == mover) sameColorCount++;
+            }
+            if (sameColorCount == 3) return true;
+        }
+        return false;
     }
 
     private List<MCTSTree.Action> legalActions() {
