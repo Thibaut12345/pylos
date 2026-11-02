@@ -63,10 +63,14 @@ public final class PylosSymmetry {
     public static Position canonicalize(PylosBoard board, PylosGameState state, PylosPlayerColor playerToMove) {
         if (board == null || state == null || playerToMove == null) throw new IllegalArgumentException("Board, state and player-to-move are required");
 
+        // PylosBoard maintains this packed 2-bit-per-location representation
+        // incrementally, so read it once instead of dereferencing 30 spheres for
+        // each of the eight board symmetries.
+        long boardBits = board.toLong();
         int bestSymmetry = 0;
-        long bestOccupancy = occupancy(board, 0);
+        long bestOccupancy = occupancy(boardBits, 0);
         for (int symmetry = 1; symmetry < SYMMETRY_COUNT; symmetry++) {
-            long candidate = occupancy(board, symmetry);
+            long candidate = occupancy(boardBits, symmetry);
             if (Long.compareUnsigned(candidate, bestOccupancy) < 0) {
                 bestOccupancy = candidate;
                 bestSymmetry = symmetry;
@@ -143,16 +147,34 @@ public final class PylosSymmetry {
         }
     }
 
-    private static long occupancy(PylosBoard board, int symmetry) {
+    private static long occupancy(long boardBits, int symmetry) {
         long bits = 0L;
+        int[] sourceOffsets = SOURCE_BIT_OFFSETS[symmetry];
         for (int i = 0; i < LOCATION_COUNT; i++) {
-            int[] c = COORDINATES[symmetry][i];
-            PylosSphere sphere = board.getBoardLocation(c[0], c[1], c[2]).getSphere();
-            int value = sphere == null ? 0
-                    : sphere.PLAYER_COLOR == PylosPlayerColor.LIGHT ? 1 : 2;
+            long value = (boardBits >>> sourceOffsets[i]) & 3L;
             bits = (bits << 2) | value;
         }
         return bits;
+    }
+
+    // PylosBoard packs locations in z, x, y order, with two bits per location.
+    // Precompute the source bit offset for each location in each canonical ordering.
+    private static final int[][] SOURCE_BIT_OFFSETS = createSourceBitOffsets();
+
+    private static int[][] createSourceBitOffsets() {
+        int[][] offsets = new int[SYMMETRY_COUNT][LOCATION_COUNT];
+        for (int symmetry = 0; symmetry < SYMMETRY_COUNT; symmetry++) {
+            for (int i = 0; i < LOCATION_COUNT; i++) {
+                int[] c = COORDINATES[symmetry][i];
+                int z = c[2];
+                int precedingLocations = 0;
+                for (int level = 0; level < z; level++)
+                    precedingLocations += (4 - level) * (4 - level);
+                int boardIndex = precedingLocations + c[0] * (4 - z) + c[1];
+                offsets[symmetry][i] = boardIndex * 2;
+            }
+        }
+        return offsets;
     }
 
     private static int[][][] createCoordinateSequences() {

@@ -17,6 +17,7 @@ public class StudentPlayer extends PylosPlayer {
 
     private PylosGameSimulator simulator;
     private PylosBoard board;
+    private PylosLocation[] usableLocationBuffer;
     private MCTSTree lightTree;
     private MCTSTree darkTree;
     private MCTSTree tree;
@@ -64,6 +65,8 @@ public class StudentPlayer extends PylosPlayer {
 //            decisionsMade = 0;
 //        }
         this.board = board;
+        if (usableLocationBuffer == null || usableLocationBuffer.length != board.getLocations().length)
+            usableLocationBuffer = new PylosLocation[board.getLocations().length];
         this.simulator = new PylosGameSimulator(state, PLAYER_COLOR, board);
         ensureTreesInitialized();
         tree = treeFor(PLAYER_COLOR);
@@ -223,22 +226,45 @@ public class StudentPlayer extends PylosPlayer {
     private List<MCTSTree.Action> legalActions() {
         PylosGameState state = simulator.getState();
         PylosPlayerColor color = simulator.getColor();
-        List<MCTSTree.Action> actions = new ArrayList<>();
+        List<MCTSTree.Action> actions = new ArrayList<>(40);
+
         if (state == PylosGameState.MOVE) {
+            PylosLocation[] locations = board.getLocations();
+            int usableCount = 0;
+
+            // Collect usable destinations once instead of testing all 30 locations
+            // separately for every movable sphere.
+            for (PylosLocation location : locations) {
+                if (location.isUsable()) usableLocationBuffer[usableCount++] = location;
+            }
+
             for (PylosSphere sphere : board.getSpheres(color)) {
                 if (sphere.isReserve() || !sphere.canMove()) continue;
-                for (PylosLocation location : board.getLocations())
-                    if (sphere.canMoveTo(location)) actions.add(MCTSTree.Action.move(sphere, location));
+
+                PylosLocation from = sphere.getLocation();
+                for (int i = 0; i < usableCount; i++) {
+                    PylosLocation destination = usableLocationBuffer[i];
+                    // Equivalent to canMoveTo after filtering usable destinations:
+                    // the destination must be higher and not supported by this sphere.
+                    if (from.Z < destination.Z && !from.isBelow(destination))
+                        actions.add(MCTSTree.Action.move(sphere, destination));
+                }
             }
-            PylosSphere reserve = board.getReserve(color);
-            if (reserve != null) for (PylosLocation location : board.getLocations())
-                if (location.isUsable()) actions.add(MCTSTree.Action.placement(reserve, location));
+
+            // A player can still move an existing sphere after using the final reserve.
+            if (board.getReservesSize(color) > 0) {
+                PylosSphere reserve = board.getReserve(color);
+                for (int i = 0; i < usableCount; i++)
+                    actions.add(MCTSTree.Action.placement(reserve, usableLocationBuffer[i]));
+            }
         } else if (state == PylosGameState.REMOVE_FIRST) {
             for (PylosSphere sphere : board.getSpheres(color))
-                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTree.Action.removeFirst(sphere));
+                if (!sphere.isReserve() && sphere.canRemove())
+                    actions.add(MCTSTree.Action.removeFirst(sphere));
         } else if (state == PylosGameState.REMOVE_SECOND) {
             for (PylosSphere sphere : board.getSpheres(color))
-                if (!sphere.isReserve() && sphere.canRemove()) actions.add(MCTSTree.Action.removeSecond(sphere));
+                if (!sphere.isReserve() && sphere.canRemove())
+                    actions.add(MCTSTree.Action.removeSecond(sphere));
             actions.add(MCTSTree.Action.pass());
         }
         return actions;
