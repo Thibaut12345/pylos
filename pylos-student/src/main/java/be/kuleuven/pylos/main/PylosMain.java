@@ -97,8 +97,8 @@ public class PylosMain {
         PylosPlayerType p2 = new PylosPlayerType("Student") {
             @Override
             public PylosPlayer create() {
-                //return new StudentPlayer();
-                return new StudentBasePlayer();
+                return new StudentPlayer();
+                //return new StudentBasePlayer();
                 //return new StudentTimeBudgetPlayer();
             }
         };

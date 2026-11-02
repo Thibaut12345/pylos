@@ -12,7 +12,7 @@ import java.util.Random;
 import java.util.function.Supplier;
 
 public final class MCTSTree {
-    public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(1.0);
+    public static final double DEFAULT_EXPLORATION_CONSTANT = 0.75;
     public enum ActionType { PLACEMENT, MOVE, REMOVE_FIRST, REMOVE_SECOND, PASS }
 
 
@@ -66,11 +66,7 @@ public final class MCTSTree {
         }
         public Action getAction() { return action; }
         public int getVisits() { return visits; }
-        public double getMeanReward() { return visits == 0 ? 0.0 : totalReward / visits; }
         public PylosPlayerColor getColor() { return playerToMove; }
-        public long getStateKey() { return stateKey; }
-        public boolean isObserved() { return observed; }
-        public boolean needsActions() { return expandedActionCount == 0; }
         public void setObservedState(long key, PylosPlayerColor color) {
             if (color == null) throw new IllegalArgumentException("Observed state and player are required");
             if (observed) {
