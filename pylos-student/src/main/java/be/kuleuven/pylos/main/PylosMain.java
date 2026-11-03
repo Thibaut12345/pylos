@@ -44,7 +44,8 @@ public class PylosMain {
         PylosPlayerType newPlayer = new PylosPlayerType("new") {
             @Override
             public PylosPlayer create() {
-                return new PylosPlayerMiniMax(4);
+                //return new PylosPlayerMiniMax(4);
+                return new StudentPlayer();
                 //return new StudentTimeBudgetPlayer();
                 }
         };
@@ -52,7 +53,9 @@ public class PylosMain {
         PylosPlayerType basePlayer = new PylosPlayerType("baseToCompareWith") {
             @Override
             public PylosPlayer create() {
-                return new StudentPlayer();
+                //return new StudentPlayer();
+                return new StudentBasePlayer();
+                //return new StudentTimeBudgetPlayer();
             }
         };
 
