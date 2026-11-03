@@ -5,6 +5,7 @@ import be.kuleuven.pylos.player.PylosPlayer;
 import be.kuleuven.pylos.player.PylosPlayerObserver;
 
 import java.util.*;
+import java.util.function.Supplier;
 
 /** MCTS player with adversarial UCT selection, tactically biased rollouts and symmetry-aware states. */
 public class StudentBasePlayer extends PylosPlayer {
@@ -96,7 +97,7 @@ public class StudentBasePlayer extends PylosPlayer {
         if (chosenTreeAction == null) return null;
         PylosSymmetryBasePlayer.Position position = canonicalPosition();
         //decisionsMade++;
-        return PylosSymmetryBasePlayer.toActualAction(chosenTreeAction, legalActions(), position);
+        return PylosSymmetryBasePlayer.toActualAction(chosenTreeAction, board, simulator.getColor(), position);
     }
 
     private void runOneIteration(MCTSTreeBasePlayer.Node root) {
@@ -111,12 +112,14 @@ public class StudentBasePlayer extends PylosPlayer {
         try {
             int depth = 0;
             while (!isTerminal()) {
-                List<MCTSTreeBasePlayer.Action> actualLegal = legalActions();
-                if (actualLegal.isEmpty()) throw new IllegalStateException("No legal actions in " + simulator.getState());
                 PylosSymmetryBasePlayer.Position position = canonicalPosition();
-                List<MCTSTreeBasePlayer.Action> canonicalLegal = canonicalActions(actualLegal, position);
-                MCTSTreeBasePlayer.Node child = tree.selectOrExpand(node, canonicalLegal);
-                MCTSTreeBasePlayer.Action actualAction = PylosSymmetryBasePlayer.toActualAction(child.getAction(), actualLegal, position);
+                MCTSTreeBasePlayer.Node child = tree.selectOrExpand(
+                        node,
+                        () -> canonicalActions(legalActions(), position)
+                );
+                MCTSTreeBasePlayer.Action actualAction = PylosSymmetryBasePlayer.toActualAction(
+                        child.getAction(), board, simulator.getColor(), position
+                );
                 undo.add(apply(actualAction));
                 tree.observeState(child, stateKey(), simulator.getColor());
                 node = child;
@@ -155,22 +158,65 @@ public class StudentBasePlayer extends PylosPlayer {
         PylosPlayerColor mover = simulator.getColor();
         List<MCTSTreeBasePlayer.Action> squareMoves = new ArrayList<>(), safe = new ArrayList<>();
         MCTSTreeBasePlayer.Action winning = null;
+
+        // Square detection is a board-geometry check. Avoid changing the simulator
+        // for every rollout candidate merely to discover whether it grants removals.
+        boolean lastReserve = board.getReservesSize(mover) == 1;
         for (MCTSTreeBasePlayer.Action action : available) {
-            UndoRecord record = apply(action);
-            PylosGameState state = simulator.getState();
-            PylosPlayerColor winner = simulator.getWinner();
-            if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
-            if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
-            if (state == PylosGameState.REMOVE_FIRST) squareMoves.add(action);
-            undo(record);
-            simulator = new PylosGameSimulator(record.state, record.color, board);
-            if (winning != null) break;
+            boolean createsSquare = isSquareCompletedBy(action, mover);
+            if (createsSquare) {
+                squareMoves.add(action);
+                safe.add(action);
+                continue;
+            }
+
+            // Only a placement using the player's final reserve can terminate the
+            // game by exhausting that reserve. Other actions cannot cause this win check.
+            if (lastReserve && action.type == MCTSTreeBasePlayer.ActionType.PLACEMENT) {
+                UndoRecord record = apply(action);
+                PylosGameState state = simulator.getState();
+                PylosPlayerColor winner = simulator.getWinner();
+                if (state == PylosGameState.COMPLETED && winner == mover) winning = action;
+                if (state != PylosGameState.COMPLETED || winner == null || winner == mover) safe.add(action);
+                undo(record);
+                simulator = new PylosGameSimulator(record.state, record.color, board);
+                if (winning != null) break;
+            } else {
+                safe.add(action);
+            }
         }
+
         if (winning != null) return winning;
         if (!squareMoves.isEmpty() && searchRandom.nextDouble() < 0.75)
             return squareMoves.get(searchRandom.nextInt(squareMoves.size()));
         List<MCTSTreeBasePlayer.Action> choices = safe.isEmpty() ? available : safe;
         return choices.get(searchRandom.nextInt(choices.size()));
+    }
+
+    /**
+     * Returns whether this placement or upward move completes a same-color square.
+     * The destination is considered occupied by the mover; a moved sphere's origin
+     * is considered empty. PylosLocation.getSquares() includes standard and advanced
+     * game-mode square patterns.
+     */
+    private boolean isSquareCompletedBy(MCTSTreeBasePlayer.Action action, PylosPlayerColor mover) {
+        if (action.type != MCTSTreeBasePlayer.ActionType.PLACEMENT
+                && action.type != MCTSTreeBasePlayer.ActionType.MOVE) return false;
+
+        PylosLocation destination = action.location;
+        PylosLocation origin = action.type == MCTSTreeBasePlayer.ActionType.MOVE
+                ? action.sphere.getLocation() : null;
+
+        for (PylosSquare square : destination.getSquares()) {
+            int sameColorCount = 0;
+            for (PylosLocation location : square.getLocations()) {
+                if (location == destination || location == origin) continue;
+                PylosSphere occupied = location.getSphere();
+                if (occupied != null && occupied.PLAYER_COLOR == mover) sameColorCount++;
+            }
+            if (sameColorCount == 3) return true;
+        }
+        return false;
     }
 
     private List<MCTSTreeBasePlayer.Action> legalActions() {
@@ -256,7 +302,7 @@ public class StudentBasePlayer extends PylosPlayer {
 
 
 final class MCTSTreeBasePlayer {
-    public static final double DEFAULT_EXPLORATION_CONSTANT = Math.sqrt(1.0);
+    public static final double DEFAULT_EXPLORATION_CONSTANT = 1;
     public enum ActionType { PLACEMENT, MOVE, REMOVE_FIRST, REMOVE_SECOND, PASS }
 
 
@@ -265,8 +311,8 @@ final class MCTSTreeBasePlayer {
         public final PylosSphere sphere;
         public final PylosLocation location;
         private final boolean canonical;
-        private final int fromIndex;
-        private final int toIndex;
+        final int fromIndex;
+        final int toIndex;
 
         private Action(ActionType type, PylosSphere sphere, PylosLocation location, boolean canonical, int fromIndex, int toIndex) {
             this.type = type;
@@ -297,7 +343,8 @@ final class MCTSTreeBasePlayer {
     public static final class Node {
         private final Action action;
         private final List<Node> children = new ArrayList<>();
-        private List<Action> unexpandedActions;
+        private final BitSet expandedActionIds = new BitSet();
+        private int expandedActionCount;
         private int visits;
         private double totalReward;
         private long stateKey;
@@ -309,11 +356,7 @@ final class MCTSTreeBasePlayer {
         }
         public Action getAction() { return action; }
         public int getVisits() { return visits; }
-        public double getMeanReward() { return visits == 0 ? 0.0 : totalReward / visits; }
         public PylosPlayerColor getColor() { return playerToMove; }
-        public long getStateKey() { return stateKey; }
-        public boolean isObserved() { return observed; }
-        public boolean needsActions() { return unexpandedActions == null; }
         public void setObservedState(long key, PylosPlayerColor color) {
             if (color == null) throw new IllegalArgumentException("Observed state and player are required");
             if (observed) {
@@ -375,15 +418,25 @@ final class MCTSTreeBasePlayer {
             stateIndex.putIfAbsent(node.stateKey, node);
     }
 
-    public Node selectOrExpand(Node node, List<Action> legal) {
-        if (node == null || legal == null || legal.isEmpty()) throw new IllegalArgumentException("Node and legal actions are required");
-        if (node.unexpandedActions == null) {
-            node.unexpandedActions = new ArrayList<>(legal);
-            //Collections.shuffle(node.unexpandedActions, random);
-        }
-        if (!node.unexpandedActions.isEmpty()) {
-            Node child = new Node( node.unexpandedActions.remove(node.unexpandedActions.size() - 1), 0L, null);
-            node.children.add(child); return child;
+    public Node selectOrExpand(Node node, Supplier<List<Action>> legalActionsSupplier) {
+        if (node == null || legalActionsSupplier == null)
+            throw new IllegalArgumentException("Node and legal-action supplier are required");
+        List<Action> legal = legalActionsSupplier.get();
+        if (legal == null || legal.isEmpty())
+            throw new IllegalArgumentException("A non-empty legal-action list is required");
+
+        // Keep only compact action identifiers in the node. The temporary legal-action
+        // list can be discarded after finding and marking one action as expanded.
+        for (int i = legal.size() - 1; i >= 0; i--) {
+            Action action = legal.get(i);
+            int actionId = actionId(action);
+            if (!node.expandedActionIds.get(actionId)) {
+                node.expandedActionIds.set(actionId);
+                node.expandedActionCount++;
+                Node child = new Node(action, 0L, null);
+                node.children.add(child);
+                return child;
+            }
         }
         Node best = null; double bestValue = Double.NEGATIVE_INFINITY;
         for (Node child : node.children) {
@@ -396,6 +449,13 @@ final class MCTSTreeBasePlayer {
         }
         if (best == null) throw new IllegalStateException("No child available for UCT selection");
         return best;
+    }
+
+    private static int actionId(Action action) {
+        // Each action type has a disjoint 31 x 31 range. Index -1 is encoded as 0.
+        int from = action.fromIndex + 1;
+        int to = action.toIndex + 1;
+        return action.type.ordinal() * 31 * 31 + from * 31 + to;
     }
 
     public void backpropagate(List<Node> path, double reward) {
@@ -451,6 +511,13 @@ final class PylosSymmetryBasePlayer {
 
             return COORDINATE_INDEX[symmetry]
                     [location.X][location.Y][location.Z];
+        }
+
+        private PylosLocation locationAt(PylosBoard board, int index) {
+            if (board == null || index < 0 || index >= LOCATION_COUNT)
+                throw new IllegalArgumentException("Board and valid canonical location index are required");
+            int[] coordinates = COORDINATES[symmetry][index];
+            return board.getBoardLocation(coordinates[0], coordinates[1], coordinates[2]);
         }
 
         private static final int[][][][] COORDINATE_INDEX = createCoordinateIndex();
@@ -515,15 +582,44 @@ final class PylosSymmetryBasePlayer {
 
     public static MCTSTreeBasePlayer.Action toActualAction(
             MCTSTreeBasePlayer.Action canonicalAction,
-            Iterable<MCTSTreeBasePlayer.Action> actualLegalActions,
+            PylosBoard board,
+            PylosPlayerColor playerColor,
             Position position
     ) {
-        if (canonicalAction == null || actualLegalActions == null || position == null)
-            throw new IllegalArgumentException("Canonical action, legal actions and position are required");
-        for (MCTSTreeBasePlayer.Action actual : actualLegalActions) {
-            if (canonicalAction.sameAs(toCanonicalAction(actual, position))) return actual;
+        if (canonicalAction == null || board == null || playerColor == null || position == null)
+            throw new IllegalArgumentException("Canonical action, board, player color and position are required");
+
+        PylosLocation from = canonicalAction.fromIndex < 0
+                ? null : position.locationAt(board, canonicalAction.fromIndex);
+        PylosLocation to = canonicalAction.toIndex < 0
+                ? null : position.locationAt(board, canonicalAction.toIndex);
+
+        switch (canonicalAction.type) {
+            case PLACEMENT:
+                PylosSphere reserve = board.getReserve(playerColor);
+                if (reserve == null || to == null)
+                    throw new IllegalStateException("Canonical placement cannot be mapped to the current board");
+                return MCTSTreeBasePlayer.Action.placement(reserve, to);
+            case MOVE:
+                PylosSphere movingSphere = from == null ? null : from.getSphere();
+                if (movingSphere == null || to == null)
+                    throw new IllegalStateException("Canonical move cannot be mapped to the current board");
+                return MCTSTreeBasePlayer.Action.move(movingSphere, to);
+            case REMOVE_FIRST:
+                PylosSphere firstRemoval = from == null ? null : from.getSphere();
+                if (firstRemoval == null)
+                    throw new IllegalStateException("Canonical first removal cannot be mapped to the current board");
+                return MCTSTreeBasePlayer.Action.removeFirst(firstRemoval);
+            case REMOVE_SECOND:
+                PylosSphere secondRemoval = from == null ? null : from.getSphere();
+                if (secondRemoval == null)
+                    throw new IllegalStateException("Canonical second removal cannot be mapped to the current board");
+                return MCTSTreeBasePlayer.Action.removeSecond(secondRemoval);
+            case PASS:
+                return MCTSTreeBasePlayer.Action.pass();
+            default:
+                throw new IllegalStateException("Unsupported canonical action type: " + canonicalAction.type);
         }
-        throw new IllegalStateException("Canonical action has no legal equivalent in the current orientation: " + canonicalAction);
     }
 
     private static long occupancy(PylosBoard board, int symmetry) {
